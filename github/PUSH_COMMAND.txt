@@ -1,1 +1,1 @@
-cd ~/Downloads && unzip RuckOps-Project1.zip -d RuckOps-Project1 && cd RuckOps-Project1 && git init && git add . && git commit -m "Project 1: App Idea + MVP Scope" && echo "✅ Done. Upload to GitHub at https://github.com/new"
+cd ~/Downloads && unzip -o RuckOps-Project4.zip -d RuckOps-Project4 && cd RuckOps-Project4 && git init && git add . && git commit -m "Project 4: Developer Brief + File Structure" && git remote add origin https://github.com/khurang-r/RuckOps.git && git branch -M main && git push -u origin main
