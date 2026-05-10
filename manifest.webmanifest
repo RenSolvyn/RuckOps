@@ -1,0 +1,32 @@
+{
+  "name": "RuckOps",
+  "short_name": "RuckOps",
+  "description": "GPS workout tracker for rucking and running. Built for ruckers.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0D0F0D",
+  "theme_color": "#0D0F0D",
+  "categories": ["fitness", "health", "sports"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

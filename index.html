@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0D0F0D" />
+  <title>RuckOps</title>
+  <meta name="description" content="GPS workout tracker for rucking and running. Built for ruckers." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&family=Roboto+Condensed:wght@700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app"><div class="boot">RUCKOPS · BOOTING…</div></div>
+
+  <!-- Toast region -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Templates ------------------------------------------------------------ -->
+
+  <template id="tpl-welcome">
+    <main class="screen welcome">
+      <div class="topo"></div>
+      <header class="welcome-hero">
+        <h1 class="wordmark">RUCK<span>OPS</span></h1>
+        <p class="tagline">BUILT FOR RUCKERS</p>
+      </header>
+      <section class="auth-block">
+        <p class="muted small">No accounts in this build — your data lives on this device.</p>
+        <button class="btn btn-primary" id="welcome-continue">GET STARTED</button>
+      </section>
+      <footer class="welcome-footer">
+        <span class="muted small">v0.1 · web MVP</span>
+      </footer>
+    </main>
+  </template>
+
+  <template id="tpl-onboarding">
+    <main class="screen onboarding">
+      <div class="step-dots" data-step="1">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <section class="ob-step" data-step="1">
+        <h2 class="title">CHOOSE YOUR UNITS</h2>
+        <div class="card-row">
+          <button class="ob-card selected" data-units="imperial">
+            <span class="big">MI · LBS</span>
+            <span class="sub">Imperial</span>
+          </button>
+          <button class="ob-card" data-units="metric">
+            <span class="big">KM · KG</span>
+            <span class="sub">Metric</span>
+          </button>
+        </div>
+        <button class="btn btn-primary ob-next" data-next="2">NEXT</button>
+      </section>
+      <section class="ob-step hidden" data-step="2">
+        <h2 class="title">BODY WEIGHT (OPTIONAL)</h2>
+        <p class="muted">Used for calorie estimates. Skip if you'd rather not.</p>
+        <div class="num-input">
+          <input type="number" min="0" max="500" id="ob-bodyweight" inputmode="decimal" />
+          <span class="suffix" data-unit="weight">LBS</span>
+        </div>
+        <div class="row">
+          <button class="btn btn-text ob-skip" data-next="3">SKIP</button>
+          <button class="btn btn-primary ob-next" data-next="3">NEXT</button>
+        </div>
+      </section>
+      <section class="ob-step hidden" data-step="3">
+        <h2 class="title">DEFAULT PACK WEIGHT</h2>
+        <p class="muted">Saves time on every ruck. You can change it per workout.</p>
+        <div class="num-input">
+          <input type="number" min="0" max="200" id="ob-packweight" value="35" inputmode="decimal" />
+          <span class="suffix" data-unit="weight">LBS</span>
+        </div>
+        <button class="btn btn-primary ob-next" data-next="4">NEXT</button>
+      </section>
+      <section class="ob-step hidden" data-step="4">
+        <h2 class="title">PERMISSIONS</h2>
+        <div class="perm-card">
+          <h3>LOCATION</h3>
+          <p class="muted">RuckOps tracks your route while a workout is running. Required to record distance and pace.</p>
+          <p class="muted small">Web build: only works while this tab is in the foreground. Keep the screen on.</p>
+          <button class="btn btn-outline" id="ob-perm-location">ALLOW LOCATION</button>
+          <span class="perm-status" id="ob-perm-status"></span>
+        </div>
+        <button class="btn btn-primary" id="ob-finish">CONTINUE TO DASHBOARD</button>
+      </section>
+    </main>
+  </template>
+
+  <template id="tpl-home">
+    <main class="screen home">
+      <header class="status-bar">
+        <span class="brand">RUCKOPS</span>
+        <span class="muted" id="home-date"></span>
+      </header>
+      <div class="perm-banner hidden" id="perm-banner">
+        Location permission needed — tap to fix.
+      </div>
+      <button class="hero-cta" id="start-workout">
+        <span class="cta-label">START WORKOUT</span>
+        <span class="cta-sub">Tap to begin a ruck or run</span>
+      </button>
+      <section class="panel">
+        <h3 class="panel-title">THIS MONTH</h3>
+        <div class="stat-row" id="month-stats">
+          <div class="stat"><span class="stat-label">DISTANCE</span><span class="stat-val" data-month="distance">0</span></div>
+          <div class="stat"><span class="stat-label">TIME</span><span class="stat-val" data-month="time">0:00</span></div>
+          <div class="stat"><span class="stat-label">WEIGHT MOVED</span><span class="stat-val" data-month="moved">0</span></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h3 class="panel-title">RECENT</h3>
+        <ol class="workout-list" id="recent-list"></ol>
+      </section>
+      <nav class="tabbar">
+        <a href="#/home" class="tab active">HOME</a>
+        <a href="#/history" class="tab">HISTORY</a>
+        <a href="#/profile" class="tab">PROFILE</a>
+      </nav>
+    </main>
+  </template>
+
+  <template id="tpl-pre">
+    <main class="screen pre">
+      <header class="screen-header">
+        <button class="back" data-route="#/home">←</button>
+        <h2>NEW WORKOUT</h2>
+      </header>
+      <div class="mode-toggle">
+        <button class="mode selected" data-mode="ruck">RUCK</button>
+        <button class="mode" data-mode="run">RUN</button>
+      </div>
+      <section class="pack-section" id="pack-section">
+        <label class="muted">PACK WEIGHT</label>
+        <div class="num-input large">
+          <input type="number" min="0" max="200" id="pre-packweight" inputmode="decimal" />
+          <span class="suffix" data-unit="weight">LBS</span>
+        </div>
+      </section>
+      <section class="gps-panel">
+        <span class="gps-icon">📡</span>
+        <span>GPS SIGNAL: </span>
+        <span class="gps-status" id="gps-status">SEARCHING</span>
+      </section>
+      <button class="btn btn-primary big-cta" id="begin-tracking" disabled>START</button>
+      <p class="muted small foreground-note">
+        Workout records while this tab is open. Don't lock the screen — keep it on.
+      </p>
+    </main>
+  </template>
+
+  <template id="tpl-live">
+    <main class="screen live">
+      <div class="hero-metric">
+        <span class="hero-num" id="live-distance">0.00</span>
+        <span class="hero-unit" data-unit="distance">MI</span>
+      </div>
+      <div class="sub-metrics">
+        <div class="sub-stat"><span class="label">DURATION</span><span class="val" id="live-duration">00:00</span></div>
+        <div class="sub-stat"><span class="label">PACE</span><span class="val" id="live-pace">--:--</span></div>
+        <div class="sub-stat" id="live-pack-stat"><span class="label">PACK</span><span class="val" id="live-pack">--</span></div>
+      </div>
+      <div class="live-controls">
+        <button class="btn btn-outline" id="live-pause">PAUSE</button>
+        <button class="btn btn-danger" id="live-end">END</button>
+        <button class="btn btn-outline btn-square" id="live-lock" title="Lock screen">🔒</button>
+      </div>
+      <div class="paused-overlay hidden" id="paused-overlay">
+        <span>PAUSED</span>
+        <button class="btn btn-primary" id="live-resume">RESUME</button>
+      </div>
+      <div class="lock-overlay hidden" id="lock-overlay">
+        <span class="muted">SCREEN LOCKED · double-tap to unlock</span>
+      </div>
+    </main>
+  </template>
+
+  <template id="tpl-summary">
+    <main class="screen summary">
+      <header class="screen-header">
+        <h2>WORKOUT COMPLETE</h2>
+      </header>
+      <div class="summary-stats" id="summary-stats"></div>
+      <div class="map-wrap" id="summary-map"></div>
+      <label class="muted small">NOTES</label>
+      <textarea id="summary-notes" rows="3" placeholder="optional"></textarea>
+      <div class="row">
+        <button class="btn btn-text" id="summary-discard">DISCARD</button>
+        <button class="btn btn-primary" id="summary-save">SAVE</button>
+      </div>
+    </main>
+  </template>
+
+  <template id="tpl-history">
+    <main class="screen history">
+      <header class="screen-header"><h2>HISTORY</h2></header>
+      <div class="filter-row">
+        <button class="filter selected" data-filter="all">ALL</button>
+        <button class="filter" data-filter="ruck">RUCK</button>
+        <button class="filter" data-filter="run">RUN</button>
+      </div>
+      <ol class="workout-list" id="history-list"></ol>
+      <p class="muted small empty hidden" id="history-empty">No workouts yet. Hit the field.</p>
+      <nav class="tabbar">
+        <a href="#/home" class="tab">HOME</a>
+        <a href="#/history" class="tab active">HISTORY</a>
+        <a href="#/profile" class="tab">PROFILE</a>
+      </nav>
+    </main>
+  </template>
+
+  <template id="tpl-detail">
+    <main class="screen detail">
+      <header class="screen-header">
+        <button class="back" data-route="#/history">←</button>
+        <h2 id="detail-title">WORKOUT</h2>
+      </header>
+      <div class="summary-stats" id="detail-stats"></div>
+      <div class="map-wrap" id="detail-map"></div>
+      <section class="panel">
+        <h3 class="panel-title">NOTES</h3>
+        <p id="detail-notes" class="notes muted">—</p>
+      </section>
+      <button class="btn btn-danger" id="detail-delete">DELETE WORKOUT</button>
+    </main>
+  </template>
+
+  <template id="tpl-profile">
+    <main class="screen profile">
+      <header class="screen-header"><h2>PROFILE</h2></header>
+      <section class="panel">
+        <h3 class="panel-title">SETTINGS</h3>
+        <div class="setting-row">
+          <span class="muted">UNITS</span>
+          <select id="set-units">
+            <option value="imperial">MI · LBS</option>
+            <option value="metric">KM · KG</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <span class="muted">DEFAULT PACK</span>
+          <div class="num-input small">
+            <input type="number" min="0" max="200" id="set-packweight" inputmode="decimal" />
+            <span class="suffix" data-unit="weight">LBS</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="muted">BODY WEIGHT</span>
+          <div class="num-input small">
+            <input type="number" min="0" max="500" id="set-bodyweight" inputmode="decimal" />
+            <span class="suffix" data-unit="weight">LBS</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="muted">AUTO-PAUSE</span>
+          <label class="toggle"><input type="checkbox" id="set-autopause" /><span></span></label>
+        </div>
+      </section>
+      <section class="panel">
+        <h3 class="panel-title">DATA</h3>
+        <button class="btn btn-outline" id="export-csv">EXPORT CSV</button>
+        <button class="btn btn-text danger" id="reset-app">RESET ALL DATA</button>
+      </section>
+      <p class="muted small">v0.1 · web MVP · <a href="#" id="about-link">about</a></p>
+      <nav class="tabbar">
+        <a href="#/home" class="tab">HOME</a>
+        <a href="#/history" class="tab">HISTORY</a>
+        <a href="#/profile" class="tab active">PROFILE</a>
+      </nav>
+    </main>
+  </template>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
