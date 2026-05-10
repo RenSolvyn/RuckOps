@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local dev servers
+node_modules/
+*.log
+
+# Build outputs
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Internal docs (moat protection — never commit institutional knowledge)
+*_PRD.md
+*_PRD_*.md
+*_ERROR_LOG.md
+*_ERROR_LOG_*.md
+*PERSONA_WALKTHROUGH*
+*ANTI_PATTERN_CATALOG*
+*MOAT*
+internal-notes/
+private/
