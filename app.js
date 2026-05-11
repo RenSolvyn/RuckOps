@@ -186,6 +186,297 @@ class KalmanGPS {
     this.originLon = null;
     this.lastT = null;
   }
+
+  // RTS (Rauch-Tung-Striebel) smoother: runs a backward pass over a stored
+  // history of forward-filtered states to produce a smoother track. Called
+  // at workout end — improves the SAVED route quality without affecting
+  // the LIVE experience. This is what Garmin watches do internally.
+  //
+  // Input: forwardStates — array of { x, y, vx, vy, P, t } from the forward pass
+  // Output: array of { lat, lon, t } smoothed positions
+  rtsSmooth(forwardStates) {
+    const n = forwardStates.length;
+    if (n < 3) return null;
+    // The smoothed estimate at step k uses both forward-filtered state and
+    // the smoothed state at k+1. We back-propagate from the final state.
+    const smoothed = new Array(n);
+    smoothed[n - 1] = {
+      x: forwardStates[n - 1].x,
+      y: forwardStates[n - 1].y,
+      vx: forwardStates[n - 1].vx,
+      vy: forwardStates[n - 1].vy
+    };
+    for (let k = n - 2; k >= 0; k--) {
+      const f = forwardStates[k];
+      const fNext = forwardStates[k + 1];
+      const sNext = smoothed[k + 1];
+      const dt = Math.max(0.001, (fNext.t - f.t) / 1000);
+      // Smoother gain Ck = Pk · Fᵀ · P_pred⁻¹ (we approximate diagonals)
+      // For constant-velocity model: trust the smoothed velocity proportional
+      // to the prior covariance. Simplified: blend forward state with smoothed-
+      // next state propagated backward.
+      const xPred = f.x + f.vx * dt;
+      const yPred = f.y + f.vy * dt;
+      // Gain: weighted by uncertainty growth (process noise) over the step.
+      // For our purposes a fixed gain ≈ 0.7 toward smoothed-next works well.
+      const g = 0.7;
+      smoothed[k] = {
+        x: f.x + g * (sNext.x - dt * sNext.vx - f.x),
+        y: f.y + g * (sNext.y - dt * sNext.vy - f.y),
+        vx: f.vx + g * (sNext.vx - f.vx),
+        vy: f.vy + g * (sNext.vy - f.vy)
+      };
+    }
+    // Convert back to lat/lon using the filter's origin
+    return forwardStates.map((f, k) => ({
+      lat: this.originLat + smoothed[k].y / this.metersPerDegLat,
+      lon: this.originLon + smoothed[k].x / this.metersPerDegLon,
+      t: f.t
+    }));
+  }
+}
+
+// -- MotionTracker: pedestrian dead reckoning -------------------------
+// Listens to the DeviceMotion API (60Hz accelerometer) to detect step
+// events and integrate distance during GPS outages.
+//
+// Algorithm:
+// 1. Filter the vertical-axis acceleration (signal from heel strike → push-off).
+// 2. Detect peaks above a threshold separated by a minimum time gap.
+// 3. Estimate stride length from recent GPS pace when signal is good.
+// 4. Maintain a heading estimate from DeviceOrientation (where available).
+// 5. When GPS drops, produce distance estimates from steps × stride.
+//
+// This is what gets us close to a Garmin watch's dropout resilience on
+// a phone. References:
+// - Tang et al. 2018 "A high-accuracy step counting method"
+// - Lan & Shih 2014 "Calibrated step-length estimation"
+//
+// Requires iOS 13+ explicit permission via requestPermission(); Chrome/Android
+// auto-grant since it's a non-sensitive sensor in their model.
+
+class MotionTracker {
+  constructor() {
+    this.enabled = false;
+    this.steps = 0;
+    this.cadenceSpm = 0;
+    this.recentStepIntervals = [];   // ms between recent steps
+    this.lastStepT = 0;
+    this.strideM = 0.75;             // meters per step, calibrated from GPS
+    this.strideCalibrated = false;
+    this.totalPDRDistanceM = 0;      // distance from PDR alone
+    this.pdrDistanceSinceGpsLoss = 0; // for GPS-outage interpolation
+    this.heading = null;             // degrees from magnetic north, 0–360
+    this._verticalAccelBuffer = [];   // recent vertical-axis samples for filtering
+    this._peakThreshold = 1.5;       // m/s² above gravity-corrected baseline
+    this._minStepIntervalMs = 250;    // 250ms = 240 spm cap (faster than any human)
+    this._maxStepIntervalMs = 2000;   // 2s = 30 spm floor (slow walk)
+    this._handler = null;
+    this._orientationHandler = null;
+    this._lastEmitTs = 0;
+    this.listeners = new Set();
+  }
+
+  static isSupported() {
+    return typeof window !== 'undefined' && 'DeviceMotionEvent' in window;
+  }
+
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  emit() { for (const fn of this.listeners) fn(this); }
+
+  // Request permission (iOS 13+) and start listening. MUST be called from a
+  // user-gesture handler on iOS, otherwise the permission request is rejected
+  // silently. Returns true if successfully started.
+  async start() {
+    if (this.enabled) return true;
+    if (!MotionTracker.isSupported()) return false;
+    try {
+      // iOS 13+ requires explicit permission
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        const r = await DeviceMotionEvent.requestPermission();
+        if (r !== 'granted') return false;
+      }
+      // Same for orientation on iOS
+      if (typeof DeviceOrientationEvent !== 'undefined'
+          && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try { await DeviceOrientationEvent.requestPermission(); } catch {}
+      }
+    } catch (e) {
+      console.warn('motion permission error', e);
+      return false;
+    }
+    this._handler = (e) => this._onMotion(e);
+    window.addEventListener('devicemotion', this._handler, { passive: true });
+    this._orientationHandler = (e) => this._onOrientation(e);
+    window.addEventListener('deviceorientation', this._orientationHandler, { passive: true });
+    this.enabled = true;
+    return true;
+  }
+
+  stop() {
+    if (!this.enabled) return;
+    if (this._handler) window.removeEventListener('devicemotion', this._handler);
+    if (this._orientationHandler) window.removeEventListener('deviceorientation', this._orientationHandler);
+    this._handler = null;
+    this._orientationHandler = null;
+    this.enabled = false;
+  }
+
+  _onMotion(e) {
+    // accelerationIncludingGravity is more reliable across devices than
+    // acceleration (which requires the linear-acceleration sensor).
+    // We subtract a moving-average baseline to isolate the step impulse.
+    const a = e.accelerationIncludingGravity || e.acceleration;
+    if (!a) return;
+    // Magnitude in 3D (orientation-independent step detection)
+    const mag = Math.sqrt((a.x||0)*(a.x||0) + (a.y||0)*(a.y||0) + (a.z||0)*(a.z||0));
+    const now = Date.now();
+
+    // Maintain a 1-second moving-average of magnitude as a baseline.
+    this._verticalAccelBuffer.push({ t: now, v: mag });
+    while (this._verticalAccelBuffer.length > 30 // 30 samples ≈ 0.5s at 60Hz
+           && now - this._verticalAccelBuffer[0].t > 1000) {
+      this._verticalAccelBuffer.shift();
+    }
+    if (this._verticalAccelBuffer.length < 5) return;
+    const baseline = this._verticalAccelBuffer.reduce((s, x) => s + x.v, 0) / this._verticalAccelBuffer.length;
+    const deviation = mag - baseline;
+
+    // Peak detection: a step is a positive deviation above threshold,
+    // separated from the prior step by ≥ minStepIntervalMs.
+    if (deviation > this._peakThreshold
+        && now - this.lastStepT > this._minStepIntervalMs) {
+      this._registerStep(now);
+    }
+  }
+
+  _onOrientation(e) {
+    // webkitCompassHeading is the iOS-Safari magnetic-north-relative heading.
+    // alpha is the device's z-axis rotation. We prefer the iOS-specific
+    // value because it's properly calibrated to magnetic north.
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      this.heading = e.webkitCompassHeading;
+    } else if (typeof e.alpha === 'number' && !isNaN(e.alpha)) {
+      // alpha=0 means device pointing north. Note: this isn't reliable without
+      // magnetometer calibration on Android; some devices return relative.
+      this.heading = (360 - e.alpha) % 360;
+    }
+  }
+
+  _registerStep(now) {
+    if (this.lastStepT > 0) {
+      const interval = now - this.lastStepT;
+      // Reject obviously bogus intervals (sensor noise, double-trigger)
+      if (interval > this._minStepIntervalMs && interval < this._maxStepIntervalMs) {
+        this.recentStepIntervals.push(interval);
+        while (this.recentStepIntervals.length > 20) this.recentStepIntervals.shift();
+        if (this.recentStepIntervals.length >= 4) {
+          const avgInterval = this.recentStepIntervals.reduce((s, x) => s + x, 0) / this.recentStepIntervals.length;
+          this.cadenceSpm = Math.round(60000 / avgInterval);
+        }
+      }
+    }
+    this.lastStepT = now;
+    this.steps++;
+    this.totalPDRDistanceM += this.strideM;
+    this.pdrDistanceSinceGpsLoss += this.strideM;
+    // Throttle emit so we don't fire on every step (UI doesn't need 200Hz)
+    if (now - this._lastEmitTs > 250) {
+      this._lastEmitTs = now;
+      this.emit();
+    }
+  }
+
+  // Calibrate stride length from observed GPS distance + step count over a
+  // window of good GPS data. Called by LiveWorkout when both are reliable.
+  calibrateStride(gpsDistanceM, stepsCovered) {
+    if (stepsCovered < 30 || gpsDistanceM < 30) return;  // need real data
+    const observedStride = gpsDistanceM / stepsCovered;
+    // Sanity: human stride is 0.4–2.0 m. Reject implausible values.
+    if (observedStride < 0.4 || observedStride > 2.0) return;
+    if (!this.strideCalibrated) {
+      this.strideM = observedStride;
+      this.strideCalibrated = true;
+    } else {
+      // Slow exponential moving average — trust accumulated calibration
+      this.strideM = this.strideM * 0.85 + observedStride * 0.15;
+    }
+  }
+
+  // Reset the GPS-outage accumulator when GPS comes back.
+  onGpsRecovered() { this.pdrDistanceSinceGpsLoss = 0; }
+}
+
+// -- BarometerTracker: pressure altitude (where available) -------------
+// Phone barometers (in iPhone 6+ and most Android flagships) give far more
+// accurate altitude than GPS — typically ±1m vs ±10m. We access via the
+// Sensor API where available (Chrome on Android with the right flag), or
+// the Generic Sensor `Barometer` interface where present. iOS Safari does
+// NOT expose barometric data to the web in current versions — this is a
+// limitation that only a native wrapper would fix.
+
+class BarometerTracker {
+  constructor() {
+    this.enabled = false;
+    this.pressureHPa = null;
+    this.seaLevelPressureHPa = 1013.25;  // ISA standard, calibrated below
+    this.altitudeM = null;
+    this._sensor = null;
+    this.listeners = new Set();
+  }
+
+  static isSupported() {
+    return typeof window !== 'undefined' && 'Barometer' in window;
+  }
+
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  emit() { for (const fn of this.listeners) fn(this); }
+
+  // International barometric formula: convert pressure to altitude.
+  // h = 44330 × (1 - (P/P0)^(1/5.255))
+  _altitudeFromPressure(p) {
+    return 44330 * (1 - Math.pow(p / this.seaLevelPressureHPa, 1 / 5.255));
+  }
+
+  // Calibrate the sea-level reference using a known GPS altitude. Called
+  // once at workout start with a high-confidence GPS altitude reading.
+  calibrate(knownAltitudeM) {
+    if (!this.pressureHPa || !isFinite(knownAltitudeM)) return;
+    // Solve for sea-level pressure given pressure + altitude:
+    // P0 = P / (1 - h/44330)^5.255
+    this.seaLevelPressureHPa = this.pressureHPa / Math.pow(1 - knownAltitudeM / 44330, 5.255);
+  }
+
+  async start() {
+    if (this.enabled) return true;
+    if (!BarometerTracker.isSupported()) return false;
+    try {
+      this._sensor = new window.Barometer({ frequency: 1 });
+      this._sensor.addEventListener('reading', () => {
+        this.pressureHPa = this._sensor.pressure;
+        this.altitudeM = this._altitudeFromPressure(this.pressureHPa);
+        this.emit();
+      });
+      this._sensor.addEventListener('error', (e) => {
+        console.warn('barometer error', e);
+        this.stop();
+      });
+      this._sensor.start();
+      this.enabled = true;
+      return true;
+    } catch (e) {
+      console.warn('barometer start failed', e);
+      return false;
+    }
+  }
+
+  stop() {
+    if (this._sensor) {
+      try { this._sensor.stop(); } catch {}
+      this._sensor = null;
+    }
+    this.enabled = false;
+  }
 }
 
 // -- Storage ------------------------------------------------------------
@@ -847,6 +1138,33 @@ class LiveWorkout {
     this.lastAlt = null;
     // HR tracking
     this.hrSamples = [];
+
+    // ------ TIER-4 GPS UPGRADES ------
+    // Pedestrian dead reckoning. Counts steps via accelerometer, estimates
+    // distance during GPS outages from stride × steps. Stride is calibrated
+    // from observed GPS distance during good signal.
+    this.motion = new MotionTracker();
+    this.motionEnabled = false;       // becomes true once permissions granted
+    this.lastGpsCalibrationT = 0;
+    this.lastGpsCalibrationDist = 0;
+    this.lastGpsCalibrationSteps = 0;
+    // PDR-supplemented distance: when GPS is healthy this == distanceM, but
+    // when GPS drops we accumulate steps × stride INTO distanceM directly.
+    this.pdrSupplementedM = 0;        // extra distance added via PDR during outages
+
+    // Barometer for true altitude (where supported, basically Chrome/Android).
+    this.barometer = new BarometerTracker();
+    this.barometerCalibrated = false;
+    this.barometerAltitudes = [];      // [{ t, alt }] from pressure sensor
+
+    // RTS smoother input: store the forward-filtered states so the backward
+    // pass at workout end can produce a cleaner saved track. Each entry is
+    // a snapshot of the Kalman state right after the UPDATE step.
+    this.forwardStates = [];          // [{ x, y, vx, vy, t }]
+
+    // Adaptive process noise: higher during transitions (start/stop, phase
+    // change), lower during steady-state. Tracked here for the Kalman tuning.
+    this._lastPhaseChangeT = 0;
   }
 
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
@@ -870,6 +1188,21 @@ class LiveWorkout {
       }
     };
     document.addEventListener('visibilitychange', this._visHandler);
+
+    // Start the motion tracker (pedestrian dead reckoning). Permission
+    // request was already done from a user gesture (the workout START button
+    // — see renderPre). Here we just start listening. Silently no-ops on
+    // browsers that don't support DeviceMotion.
+    if (this.motion && MotionTracker.isSupported()) {
+      try {
+        const ok = await this.motion.start();
+        this.motionEnabled = !!ok;
+      } catch {}
+    }
+    // Start barometer where available. Same UX — silent if unsupported.
+    if (this.barometer && BarometerTracker.isSupported()) {
+      try { await this.barometer.start(); } catch {}
+    }
 
     if ('geolocation' in navigator) {
       this.watchId = navigator.geolocation.watchPosition(
@@ -1008,16 +1341,85 @@ class LiveWorkout {
     this.lastMoveAt = now;
     this.filterStats.accepted++;
 
-    // Elevation tracking. Mobile GPS altitude is noisy (often ±10m even on
-    // good fixes), so we smooth aggressively and only count ascent/descent
-    // changes larger than a 3m threshold. This matches the convention
-    // Strava and Garmin use for "total ascent" computation.
-    if (rawFix.alt != null && (rawFix.altAcc == null || rawFix.altAcc < 30)) {
+    // Store forward-filtered Kalman state for RTS post-hoc smoothing.
+    // Keep a bounded history to avoid runaway memory on long workouts.
+    this.forwardStates.push({
+      x: this.kalman.x, y: this.kalman.y,
+      vx: this.kalman.vx, vy: this.kalman.vy,
+      t: now
+    });
+    if (this.forwardStates.length > 5000) this.forwardStates.shift();
+
+    // Adaptive process noise: tighten back to steady-state if no phase
+    // transition in the last 15 seconds. Loose during transitions (set
+    // in the tick handler) lets the filter quickly adapt to new velocity.
+    if (this._lastPhaseChangeT && now - this._lastPhaseChangeT > 15000) {
+      this.kalman.processVelNoise = 1.5;
+    }
+
+    // PDR stride calibration. When GPS has been healthy for a stretch
+    // (accuracy < 15m sustained), and we have a meaningful step count,
+    // recompute the user's stride length so PDR can take over accurately
+    // during the NEXT outage.
+    if (this.motion && this.motion.enabled && accuracy < 15) {
+      const dtCal = now - this.lastGpsCalibrationT;
+      if (this.lastGpsCalibrationT === 0) {
+        this.lastGpsCalibrationT = now;
+        this.lastGpsCalibrationDist = this.distanceM;
+        this.lastGpsCalibrationSteps = this.motion.steps;
+      } else if (dtCal >= 30000) {  // every 30s of good signal
+        const distSince = this.distanceM - this.lastGpsCalibrationDist;
+        const stepsSince = this.motion.steps - this.lastGpsCalibrationSteps;
+        if (stepsSince >= 30 && distSince >= 30) {
+          this.motion.calibrateStride(distSince, stepsSince);
+        }
+        this.lastGpsCalibrationT = now;
+        this.lastGpsCalibrationDist = this.distanceM;
+        this.lastGpsCalibrationSteps = this.motion.steps;
+      }
+    }
+
+    // PDR was filling in distance during a recent outage. Now that GPS is
+    // back, clear its outage accumulator so we don't double-count.
+    if (this.motion && this.motion.enabled) {
+      this.motion.onGpsRecovered();
+    }
+
+    // Calibrate the barometer's sea-level reference using this fix's GPS
+    // altitude (once, at the start, if altitude is high-confidence).
+    if (this.barometer && this.barometer.enabled && !this.barometerCalibrated
+        && rawFix.alt != null && rawFix.altAcc != null && rawFix.altAcc < 10) {
+      this.barometer.calibrate(rawFix.alt);
+      this.barometerCalibrated = true;
+    }
+
+    // Prefer barometer altitude when available (way more accurate than GPS).
+    // The barometer gives us a continuous high-rate altitude signal; we
+    // sample it whenever we record a GPS point and use it for elevation
+    // accumulation IF the barometer is calibrated.
+    if (this.barometer && this.barometer.enabled && this.barometerCalibrated
+        && this.barometer.altitudeM != null) {
+      smoothed.alt = this.barometer.altitudeM;
+      this.elevationBuffer.push({ t: now, alt: this.barometer.altitudeM, dist: this.distanceM });
+      while (this.elevationBuffer.length > 20) this.elevationBuffer.shift();
+      // With barometer the signal is much cleaner — use a smaller threshold (1m).
+      const recent = this.elevationBuffer.slice(-3);
+      const smoothAlt = recent.reduce((s, x) => s + x.alt, 0) / recent.length;
+      if (this.lastAlt != null) {
+        const delta = smoothAlt - this.lastAlt;
+        if (Math.abs(delta) > 1) {
+          if (delta > 0) this.totalAscentM += delta;
+          else           this.totalDescentM += -delta;
+          this.lastAlt = smoothAlt;
+        }
+      } else {
+        this.lastAlt = smoothAlt;
+      }
+    } else if (rawFix.alt != null && (rawFix.altAcc == null || rawFix.altAcc < 30)) {
+      // Fallback: GPS altitude only. Original 3m threshold logic.
       smoothed.alt = rawFix.alt;
       this.elevationBuffer.push({ t: now, alt: rawFix.alt, dist: this.distanceM });
-      // Keep last 20 elevation samples for grade computation
       while (this.elevationBuffer.length > 20) this.elevationBuffer.shift();
-      // Smoothed altitude = avg of last 5 samples
       const recent = this.elevationBuffer.slice(-5);
       const smoothAlt = recent.reduce((s, x) => s + x.alt, 0) / recent.length;
       if (this.lastAlt != null) {
@@ -1171,6 +1573,23 @@ class LiveWorkout {
     const now = Date.now();
     if (this.status === 'running') {
       this.elapsedMs += now - this.lastTickAt;
+
+      // PDR outage handling: if GPS is lost (no fix in 8+ seconds) AND the
+      // motion tracker is enabled with a calibrated stride, fill in distance
+      // from steps. This is what gives a phone PWA Garmin-class dropout
+      // resilience.
+      if (this.motion && this.motion.enabled && this.motion.strideCalibrated
+          && this.lastFixWallTime
+          && now - this.lastFixWallTime > 8000
+          && this.motion.pdrDistanceSinceGpsLoss > 0) {
+        // Add the most recent step-based distance increment to total.
+        const inc = this.motion.pdrDistanceSinceGpsLoss;
+        this.distanceM += inc;
+        this.pdrSupplementedM += inc;
+        this.motion.pdrDistanceSinceGpsLoss = 0;
+        this.lastMoveAt = now;  // suppress auto-pause during PDR-tracked motion
+      }
+
       // auto-pause if stationary too long
       if (this.autoPauseEnabled && now - this.lastMoveAt > STATIONARY_TIMEOUT_MS && !this.autoPaused) {
         this.autoPaused = true;
@@ -1228,6 +1647,11 @@ class LiveWorkout {
           }
           this.currentPhase = result.phase;
           this.phaseBuffer = []; // reset per-phase pace
+          this._lastPhaseChangeT = Date.now();
+          // Adaptive process noise: phase change means real acceleration is
+          // expected (run→walk, walk→run). Loosen the filter so it can
+          // adapt quickly. Tightens back in onPosition once steady-state.
+          this.kalman.processVelNoise = 3.0;
           if (sc) sc.onPhaseChange(result.phase, result.label);
         } else if (sc && result && result.nextPhase && result.remainingMs > 0) {
           // Anticipation cue: 10s before phase change (or whatever user picked).
@@ -1434,6 +1858,25 @@ class LiveWorkout {
       try { await this.wakeLock.release(); } catch {}
       this.wakeLock = null;
     }
+    // Stop motion + barometer trackers
+    if (this.motion) this.motion.stop();
+    if (this.barometer) this.barometer.stop();
+
+    // RTS smoother: backward pass over the forward-filtered states to
+    // produce a cleaner SAVED route than the live one. This is what
+    // Garmin watches do internally. The result replaces this.points so
+    // the saved record gets the smoother version.
+    if (this.forwardStates.length >= 10 && this.kalman.originLat != null) {
+      const smoothed = this.kalman.rtsSmooth(this.forwardStates);
+      if (smoothed && smoothed.length === this.points.length) {
+        // Preserve original accuracy/altitude metadata, swap in smoother coords
+        for (let i = 0; i < smoothed.length; i++) {
+          this.points[i].lat = smoothed[i].lat;
+          this.points[i].lon = smoothed[i].lon;
+        }
+      }
+    }
+
     this.emit();
   }
 
@@ -1470,7 +1913,13 @@ class LiveWorkout {
       totalDescentM: this.totalDescentM || 0,
       hrSamples: this.hrSamples || [],
       observedWalkSecPerMi: this.observedWalkSecPerMi || null,
-      schemaVersion: 3
+      // Schema v4: tier-4 sensor data
+      pdrSupplementedM: this.pdrSupplementedM || 0,
+      totalSteps: this.motion ? this.motion.steps : 0,
+      avgCadenceSpm: this.motion && this.motion.cadenceSpm ? this.motion.cadenceSpm : null,
+      strideCalibratedM: this.motion && this.motion.strideCalibrated ? this.motion.strideM : null,
+      barometerUsed: this.barometerCalibrated,
+      schemaVersion: 4
     };
   }
 }
@@ -3451,6 +3900,26 @@ function renderPre(root) {
     }
     window.__soundCoach = sc;
 
+    // Request DeviceMotion + DeviceOrientation permissions HERE — inside the
+    // START click handler — so iOS Safari treats it as a user gesture.
+    // The actual sensor start happens in lw.start() below; the permission
+    // grant persists for the session once given. Fire-and-forget.
+    (async () => {
+      try {
+        if (typeof DeviceMotionEvent !== 'undefined'
+            && typeof DeviceMotionEvent.requestPermission === 'function') {
+          await DeviceMotionEvent.requestPermission();
+        }
+        if (typeof DeviceOrientationEvent !== 'undefined'
+            && typeof DeviceOrientationEvent.requestPermission === 'function') {
+          await DeviceOrientationEvent.requestPermission();
+        }
+      } catch (e) {
+        // Permission denied — PDR will be unavailable but GPS-only still works.
+        console.warn('motion permission not granted', e);
+      }
+    })();
+
     window.__liveWorkout = lw;
     lw.start();
     navigate('#/live');
@@ -3625,6 +4094,27 @@ function renderLive(root) {
       }
     } else if (hrChip) {
       hrChip.classList.add('hidden');
+    }
+
+    // Cadence chip — current spm from motion tracker.
+    const cadChip = node.querySelector('#live-cadence-chip');
+    if (cadChip && live.motion && live.motion.enabled && live.motion.cadenceSpm > 0) {
+      cadChip.classList.remove('hidden');
+      cadChip.textContent = live.motion.cadenceSpm + ' SPM';
+    } else if (cadChip) {
+      cadChip.classList.add('hidden');
+    }
+
+    // Dead-reckoning chip — visible when GPS is lost but PDR is filling in.
+    const drChip = node.querySelector('#live-dr-chip');
+    if (drChip && live.motion && live.motion.enabled
+        && live.motion.strideCalibrated
+        && live.lastFixWallTime
+        && Date.now() - live.lastFixWallTime > 8000) {
+      drChip.classList.remove('hidden');
+      drChip.textContent = '📍 DEAD-RECKONING';
+    } else if (drChip) {
+      drChip.classList.add('hidden');
     }
 
     // Pacing banner — visible only if a plan is attached.
@@ -3814,6 +4304,20 @@ function renderSummary(root) {
     const maxHr = Math.max(...bpms);
     stats.push({ label: 'AVG HR', val: avgHr + ' BPM' });
     stats.push({ label: 'MAX HR', val: maxHr + ' BPM' });
+  }
+  // Cadence — average steps per minute. Only show if motion tracker was active.
+  if (record.totalSteps && record.totalSteps > 0 && record.durationMs > 0) {
+    const avgSpm = Math.round(record.totalSteps / (record.durationMs / 60000));
+    stats.push({ label: 'AVG CADENCE', val: avgSpm + ' SPM' });
+    stats.push({ label: 'TOTAL STEPS', val: record.totalSteps.toLocaleString() });
+  }
+  // PDR supplement — distance filled in by step-counter during GPS outages.
+  // Only shown if non-trivial.
+  if (record.pdrSupplementedM && record.pdrSupplementedM > 30) {
+    const pdrDisplay = settings.units === 'metric'
+      ? `${(record.pdrSupplementedM / 1000).toFixed(2)} km`
+      : `${(record.pdrSupplementedM / 1609.344).toFixed(2)} mi`;
+    stats.push({ label: 'PDR FILL', val: pdrDisplay });
   }
   // Calorie estimate: very rough — METs * weight(kg) * hours.
   // Walk ~3.5 METs, ruck w/ pack ~6 METs, run ~9 METs.
