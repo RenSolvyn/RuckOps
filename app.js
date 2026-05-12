@@ -1648,10 +1648,31 @@ const PLAN_WORKOUTS = {
   },
   LONG_RUN_120: {
     label: 'LONG RUN 2:00',
-    description: 'Maximum scheduled long run. Slow start, sustained finish.',
+    description: 'Maximum scheduled long run for half marathon training. Slow start, sustained finish.',
     mode: 'run', durationMin: 120, intensity: 'easy'
   },
+  LONG_RUN_135: {
+    label: 'LONG RUN 2:15',
+    description: 'Marathon-pace base building. Fuel after 90 min. Save quality for tomorrow.',
+    mode: 'run', durationMin: 135, intensity: 'easy'
+  },
+  LONG_RUN_150: {
+    label: 'LONG RUN 2:30',
+    description: 'Marathon-prep long run. 75-80% max HR throughout. Hydrate/fuel from start.',
+    mode: 'run', durationMin: 150, intensity: 'easy'
+  },
+  LONG_RUN_165: {
+    label: 'LONG RUN 2:45',
+    description: 'Pre-peak marathon long run. Practice race-day fueling.',
+    mode: 'run', durationMin: 165, intensity: 'easy'
+  },
+  LONG_RUN_180: {
+    label: 'LONG RUN 3:00',
+    description: 'Peak marathon long run. Per Pfitzinger 18/55, the longest scheduled training run for sub-3:45 target.',
+    mode: 'run', durationMin: 180, intensity: 'easy'
+  },
 
+  // ---- Test workouts (added in v1.8 for new templates) ----
   // Walk/run intervals (C25K)
   WR_60_90_x8: {
     label: 'WALK/RUN INTERVALS',
@@ -1738,6 +1759,18 @@ const PLAN_WORKOUTS = {
     mode: 'run', durationMin: 50, intensity: 'test',
     isTest: true, testKind: '5k_tt'
   },
+  TEST_10K_TT: {
+    label: 'TEST: 10K TIME TRIAL',
+    description: '15 min warmup → 10K all-out, even effort → 10 min cooldown. The criterion event for 10K plans.',
+    mode: 'run', durationMin: 75, intensity: 'test',
+    isTest: true, testKind: '10k_tt'
+  },
+  TEST_MARATHON_TT: {
+    label: 'TEST: MARATHON',
+    description: 'The criterion event. Practice everything: fueling, pacing, hydration. Per Pfitzinger: even or slightly negative split.',
+    mode: 'run', durationMin: 240, intensity: 'test',
+    isTest: true, testKind: 'marathon_tt'
+  },
 
   // ---- Ruck shapes (rucking plan) ----
   RUCK_20_LIGHT: {
@@ -1786,6 +1819,13 @@ const PLAN_WORKOUTS = {
     mode: 'ruck', durationMin: 180, intensity: 'test', packKg: 16,
     isTest: true, testKind: '12mi_ruck',
     distanceM: 19312  // 12 miles
+  },
+  RUCK_6MI_TEST: {
+    label: 'TEST: 6-MILE RUCK',
+    description: '6 miles ruck with 25 lb at 16 min/mi beginner standard. The criterion event for the beginner ruck plan.',
+    mode: 'ruck', durationMin: 96, intensity: 'test', packKg: 11,
+    isTest: true, testKind: '6mi_ruck',
+    distanceM: 9656  // 6 miles
   },
   RUCK_TEMPO_3MI: {
     label: 'RUCK TEMPO 3 MI',
@@ -1927,6 +1967,130 @@ const COACHING_PLANS = {
       [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_75, PLAN_WORKOUTS.REST],
       // W12: race week
       [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.EASY_RUN_20, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.REST]
+    ]
+  },
+
+  // -----------------------------------------------------------------
+  // 10K — 10 weeks (v1.8)
+  // Citation: Daniels, J. (2014). Daniels' Running Formula, 3rd ed.
+  //   The "Plan B" 10K schedule, scaled to 10 weeks (vs the textbook
+  //   12-week presentation). 3 sessions/week intermediate runners.
+  // -----------------------------------------------------------------
+  '10k-10wk': {
+    id: '10k-10wk',
+    label: '10K Training',
+    duration_weeks: 10,
+    intent: '10K event',
+    description: '10-week Daniels-style preparation for a 10K race. Tempo + interval blocks with progressive long runs.',
+    citation: 'Daniels, J. (2014). Running Formula, 3rd ed. Chapter 9 (Plan B 10K).',
+    target_population: 'Runners with continuous 30-min capability; ~VDOT 40-50.',
+    expected_workouts_per_week: 4,
+    weeks: [
+      // W1: aerobic base
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_75, PLAN_WORKOUTS.REST],
+      // W2: introduce tempo
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_75, PLAN_WORKOUTS.REST],
+      // W3: build long run
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.REST],
+      // W4: introduce intervals
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.VO2_REPS, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.REST],
+      // W5: consolidate
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.TEMPO_5MI, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.REST],
+      // W6: peak intervals
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.VO2_REPS, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_105, PLAN_WORKOUTS.REST],
+      // W7: peak tempo (longest tempo of plan)
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.TEMPO_6MI, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_105, PLAN_WORKOUTS.REST],
+      // W8: peak threshold
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.THRESHOLD_REPS, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.REST],
+      // W9: taper begin
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_75, PLAN_WORKOUTS.REST],
+      // W10: race week
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.EASY_RUN_20, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.TEST_10K_TT, PLAN_WORKOUTS.REST]
+    ]
+  },
+
+  // -----------------------------------------------------------------
+  // Marathon — 18 weeks (v1.8)
+  // Citation: Pfitzinger, P. & Douglas, S. (2008). Advanced Marathoning.
+  //   2nd ed. Human Kinetics. The "18/55" plan — 18-week schedule peaking
+  //   at 55 mi/week (~7.5 hours), recommended for sub-3:45 target marathon.
+  // -----------------------------------------------------------------
+  'marathon-18wk': {
+    id: 'marathon-18wk',
+    label: 'Marathon (Pfitzinger 18/55)',
+    duration_weeks: 18,
+    intent: 'Marathon event',
+    description: 'Pfitzinger 18-week marathon preparation. Peak 55 mpw equivalent. Long runs progress 90min to 3hr.',
+    citation: 'Pfitzinger & Douglas (2008). Advanced Marathoning, 2nd ed. The 18/55 plan.',
+    target_population: 'Runners with half-marathon base (~25-30 mpw current); ~VDOT 45-52.',
+    expected_workouts_per_week: 5,
+    weeks: [
+      // Build phase (W1-6): aerobic base, introduce tempo
+      // W1: foundation
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.EASY_RUN_30],
+      // W2: build long
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_105, PLAN_WORKOUTS.EASY_RUN_30],
+      // W3: consolidate
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_105, PLAN_WORKOUTS.EASY_RUN_45],
+      // W4: introduce threshold
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.THRESHOLD_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_120, PLAN_WORKOUTS.EASY_RUN_45],
+      // W5: build long
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.THRESHOLD_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_135, PLAN_WORKOUTS.EASY_RUN_45],
+      // W6: consolidate
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_5MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_135, PLAN_WORKOUTS.EASY_RUN_45],
+      // Peak phase (W7-13): intervals + race-pace blocks
+      // W7: introduce race-pace work
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_6MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_150, PLAN_WORKOUTS.EASY_RUN_45],
+      // W8: build peak long
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.VO2_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_150, PLAN_WORKOUTS.EASY_RUN_45],
+      // W9: tempo peak
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_6MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_165, PLAN_WORKOUTS.EASY_RUN_45],
+      // W10: consolidate
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.THRESHOLD_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_165, PLAN_WORKOUTS.EASY_RUN_45],
+      // W11: vO2 peak
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.VO2_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_165, PLAN_WORKOUTS.EASY_RUN_45],
+      // W12: longest run
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_5MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_180, PLAN_WORKOUTS.EASY_RUN_45],
+      // W13: 2nd longest run + threshold
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.THRESHOLD_REPS, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_165, PLAN_WORKOUTS.EASY_RUN_45],
+      // Taper phase (W14-18)
+      // W14: begin taper
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_5MI, PLAN_WORKOUTS.EASY_RUN_60, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_135, PLAN_WORKOUTS.EASY_RUN_30],
+      // W15: deeper taper
+      [PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_120, PLAN_WORKOUTS.REST],
+      // W16: short tempo
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.TEMPO_4MI, PLAN_WORKOUTS.EASY_RUN_45, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.LONG_RUN_90, PLAN_WORKOUTS.REST],
+      // W17: pre-race week
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.LONG_RUN_75, PLAN_WORKOUTS.REST],
+      // W18: race week
+      [PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.EASY_RUN_20, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.STRIDES_DAY, PLAN_WORKOUTS.TEST_MARATHON_TT, PLAN_WORKOUTS.REST]
+    ]
+  },
+
+  // -----------------------------------------------------------------
+  // 6-mile beginner ruck — 4 weeks (v1.8)
+  // Citation: Knapik et al. 2004 scaled-down progression. Targets first-
+  //   time ruckers building toward a 6-mile event at moderate pack weight.
+  //   Volume per week is half of the 12mi-ruck-8wk template at peak.
+  // -----------------------------------------------------------------
+  '6mi-ruck-4wk': {
+    id: '6mi-ruck-4wk',
+    label: '6-Mile Ruck Prep (beginner)',
+    duration_weeks: 4,
+    intent: 'Complete 6 miles with 25 lb',
+    description: 'Knapik-style 4-week introduction to ruck training. Lighter pack baseline, half the peak volume of the 12-mile plan.',
+    citation: 'Knapik et al. 2004 (Mil Med); progression scaled for beginners.',
+    target_population: 'New to ruck training. 30+ min continuous walk capability.',
+    expected_workouts_per_week: 3,
+    weeks: [
+      // W1: acclimation
+      [PLAN_WORKOUTS.RUCK_20_LIGHT, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_30_LIGHT, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_45_MOD, PLAN_WORKOUTS.REST],
+      // W2: build duration
+      [PLAN_WORKOUTS.RUCK_30_LIGHT, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_45_MOD, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_60_MOD, PLAN_WORKOUTS.REST],
+      // W3: peak volume
+      [PLAN_WORKOUTS.RUCK_45_MOD, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_60_MOD, PLAN_WORKOUTS.EASY_RUN_30, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_75, PLAN_WORKOUTS.REST],
+      // W4: taper + test
+      [PLAN_WORKOUTS.RUCK_30_LIGHT, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_45_MOD, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.REST, PLAN_WORKOUTS.RUCK_6MI_TEST, PLAN_WORKOUTS.REST]
     ]
   }
 };
@@ -2848,6 +3012,41 @@ const PLAN_TEMPLATES = [
     consolidationWeekIndexes: [1, 3],
     buildWeekIndexes: [0, 2, 4],
     description: 'Knapik / Army FM 21-18 8-week 12-mile ruck preparation'
+  },
+  // ---- v1.8 additions ----
+  {
+    id: '10k-10wk',
+    mode: 'run',
+    eventDistanceM: 10000,
+    naturalWeeks: 10,
+    targetVdot: 42,          // intermediate runner target
+    targetPackKg: null,
+    consolidationWeekIndexes: [2, 4, 5],  // mid-plan repeat slots
+    buildWeekIndexes: [0, 1, 3],          // early build cuts
+    description: 'Daniels-style 10-week 10K training (Plan B)'
+  },
+  {
+    id: 'marathon-18wk',
+    mode: 'run',
+    eventDistanceM: 42195,   // marathon
+    naturalWeeks: 18,
+    targetVdot: 48,          // Pfitzinger 18/55 anchor (~sub-3:45 target)
+    targetPackKg: null,
+    // Many consolidation slots in the long peak phase
+    consolidationWeekIndexes: [2, 5, 8, 9, 10],
+    buildWeekIndexes: [0, 1, 3, 4, 6, 7],
+    description: 'Pfitzinger 18-week / 55-mile-peak marathon training'
+  },
+  {
+    id: '6mi-ruck-4wk',
+    mode: 'ruck',
+    eventDistanceM: 9656,    // 6 mi
+    naturalWeeks: 4,
+    targetVdot: null,
+    targetPackKg: 11,        // 25 lb beginner load
+    consolidationWeekIndexes: [1],  // limited slots in short plan
+    buildWeekIndexes: [0, 2],
+    description: 'Knapik-derived 4-week beginner 6-mile ruck preparation'
   }
 ];
 
@@ -3421,6 +3620,328 @@ class AdaptationDecision {
     return out;
   }
 }
+
+// =====================================================================
+// P20 RegistryInvariants — cross-cutting structural gate (v1.8)
+// =====================================================================
+// Per COMPOSITION_REGISTRY.md §2 P20 and F-FORGE-GATE in §6:
+//
+//   A structured catalog of cross-cutting invariants. Each entry is a
+//   pure predicate; runAll() executes every check.
+//
+//   Tier: T1 (mechanical walker; predicates inherit their own tiers).
+//
+// What this does NOT claim: bug-free software. It eliminates a NAMED,
+// SCOPED class of bugs structurally — primarily configuration drift,
+// mode-invariant violations in plans, and registry/test divergence.
+// UI rendering, platform quirks, and unobserved real-world patterns
+// remain outside its reach. That's documented in the registry contract.
+
+const REGISTRY_INVARIANTS = [
+  // --- Configuration coherence ---
+  {
+    name: 'PLAN_TEMPLATES_have_COACHING_PLANS_entries',
+    severity: 'hard',
+    claimedBy: 'F-PLAN-GENERATE',
+    description: 'Every PLAN_TEMPLATES entry must have a matching COACHING_PLANS plan.',
+    check() {
+      const violations = [];
+      for (const t of PLAN_TEMPLATES) {
+        if (!COACHING_PLANS[t.id]) {
+          violations.push(`PLAN_TEMPLATES has '${t.id}' but COACHING_PLANS does not`);
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  {
+    name: 'COACHING_PLANS_schema_completeness',
+    severity: 'hard',
+    claimedBy: 'P12 PlanState',
+    description: 'Every COACHING_PLANS entry must have {id, label, duration_weeks, weeks[][7]}.',
+    check() {
+      const violations = [];
+      for (const [id, plan] of Object.entries(COACHING_PLANS)) {
+        if (!plan || typeof plan !== 'object') {
+          violations.push(`${id}: not an object`);
+          continue;
+        }
+        if (plan.id !== id) violations.push(`${id}: plan.id mismatch (${plan.id})`);
+        if (typeof plan.label !== 'string' || !plan.label.length) {
+          violations.push(`${id}: missing label`);
+        }
+        if (typeof plan.duration_weeks !== 'number' || plan.duration_weeks <= 0) {
+          violations.push(`${id}: invalid duration_weeks`);
+        }
+        if (!Array.isArray(plan.weeks)) {
+          violations.push(`${id}: weeks not an array`);
+          continue;
+        }
+        if (plan.weeks.length !== plan.duration_weeks) {
+          violations.push(`${id}: weeks.length ${plan.weeks.length} != duration_weeks ${plan.duration_weeks}`);
+        }
+        for (let i = 0; i < plan.weeks.length; i++) {
+          if (!Array.isArray(plan.weeks[i]) || plan.weeks[i].length !== 7) {
+            violations.push(`${id} week ${i+1}: not 7 days (got ${plan.weeks[i]?.length})`);
+          }
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  {
+    name: 'PLAN_WORKOUTS_schema_completeness',
+    severity: 'hard',
+    claimedBy: 'P12 PlanState',
+    description: 'Every PLAN_WORKOUTS entry must have {label, description, mode, durationMin, intensity}. Rest may have null/0.',
+    check() {
+      const violations = [];
+      for (const [key, w] of Object.entries(PLAN_WORKOUTS)) {
+        if (!w) { violations.push(`${key}: null/undefined`); continue; }
+        if (typeof w.label !== 'string' || !w.label.length) {
+          violations.push(`${key}: missing label`);
+        }
+        if (typeof w.description !== 'string') {
+          violations.push(`${key}: missing description`);
+        }
+        // mode can be null (cross-train) or run/ruck
+        if (w.mode != null && w.mode !== 'run' && w.mode !== 'ruck') {
+          violations.push(`${key}: invalid mode '${w.mode}'`);
+        }
+        if (typeof w.durationMin !== 'number') {
+          violations.push(`${key}: missing durationMin`);
+        }
+        if (typeof w.intensity !== 'string') {
+          violations.push(`${key}: missing intensity`);
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  // --- Cross-cutting mode invariant (registry §6) ---
+  {
+    name: 'Run_plans_contain_no_ruck_workouts',
+    severity: 'hard',
+    claimedBy: 'C-COMPOSE-PLAN, F-PLAN-GENERATE, registry §6',
+    description: 'Run-event plans must contain ZERO ruck workouts. Loading mismatch.',
+    check() {
+      const violations = [];
+      const runPlanIds = ['c25k-12wk', 'half-marathon-12wk', '10k-10wk', 'marathon-18wk'];
+      for (const id of runPlanIds) {
+        const plan = COACHING_PLANS[id];
+        if (!plan) continue;
+        for (let wi = 0; wi < plan.weeks.length; wi++) {
+          for (let di = 0; di < plan.weeks[wi].length; di++) {
+            const w = plan.weeks[wi][di];
+            if (w && w.mode === 'ruck') {
+              violations.push(`${id} W${wi+1}D${di+1}: ruck workout '${w.label}' in run plan`);
+            }
+          }
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  {
+    name: 'Ruck_plans_contain_no_hard_runs',
+    severity: 'hard',
+    claimedBy: 'C-COMPOSE-PLAN, F-PLAN-GENERATE, registry §6 (refined)',
+    description: 'Ruck-event plans may have easy runs as cross-training but NO hard runs.',
+    check() {
+      const violations = [];
+      const ruckPlanIds = ['12mi-ruck-8wk', '6mi-ruck-4wk'];
+      for (const id of ruckPlanIds) {
+        const plan = COACHING_PLANS[id];
+        if (!plan) continue;
+        for (let wi = 0; wi < plan.weeks.length; wi++) {
+          for (let di = 0; di < plan.weeks[wi].length; di++) {
+            const w = plan.weeks[wi][di];
+            if (w && w.mode === 'run' &&
+                (w.intensity === 'tempo' || w.intensity === 'hard' || w.intensity === 'test')) {
+              violations.push(`${id} W${wi+1}D${di+1}: hard run '${w.label}' in ruck plan`);
+            }
+          }
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  // --- Daniels VDOT table monotonicity ---
+  {
+    name: 'Daniels_zone_ordering',
+    severity: 'hard',
+    claimedBy: 'P13 PaceZones',
+    description: 'Per VDOT row, paces must satisfy easy > marathon > threshold > interval > repetition (sec/mi).',
+    check() {
+      const violations = [];
+      for (const row of DANIELS_PACE_TABLE) {
+        const [vdot, easy, marathon, threshold, interval, repetition] = row;
+        if (!(easy > marathon)) violations.push(`VDOT ${vdot}: easy ${easy} not > marathon ${marathon}`);
+        if (!(marathon > threshold)) violations.push(`VDOT ${vdot}: marathon ${marathon} not > threshold ${threshold}`);
+        if (!(threshold > interval)) violations.push(`VDOT ${vdot}: threshold ${threshold} not > interval ${interval}`);
+        if (!(interval > repetition)) violations.push(`VDOT ${vdot}: interval ${interval} not > repetition ${repetition}`);
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  {
+    name: 'Daniels_VDOT_monotonicity_across_rows',
+    severity: 'hard',
+    claimedBy: 'P13 PaceZones',
+    description: 'Higher VDOT → faster (smaller) pace in every zone column.',
+    check() {
+      const violations = [];
+      for (let i = 1; i < DANIELS_PACE_TABLE.length; i++) {
+        const a = DANIELS_PACE_TABLE[i - 1];
+        const b = DANIELS_PACE_TABLE[i];
+        // Index 0 is VDOT, 1-5 are zones
+        for (let col = 1; col <= 5; col++) {
+          if (!(b[col] <= a[col])) {
+            violations.push(`VDOT ${b[0]} col ${col}: ${b[col]} not faster-or-equal than VDOT ${a[0]} ${a[col]}`);
+          }
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  // --- Knapik baseline ---
+  {
+    name: 'Knapik_baseline_15min_per_mile_at_16kg',
+    severity: 'hard',
+    claimedBy: 'P13b RuckPaceTargets',
+    description: 'At packKg=16, standard pace must be 900 sec/mi within ±5 sec.',
+    check() {
+      const r = RuckPaceTargets.compute({ packKg: 16, observedRuckPaces: [], mode: 'ruck' });
+      if (!r) return { ok: false, violations: ['compute returned null at baseline'] };
+      if (Math.abs(r.standard - 900) > 5) {
+        return { ok: false, violations: [`baseline standard ${r.standard} not 900±5`] };
+      }
+      return { ok: true, violations: [] };
+    }
+  },
+  // --- Metronome bound disjointness ---
+  {
+    name: 'Metronome_mode_bounds_disjoint',
+    severity: 'hard',
+    claimedBy: 'P16 MetronomeEngine, registry §6 cross-cutting',
+    description: 'Run and walk_ruck cadence bounds must not overlap.',
+    check() {
+      const r = MetronomeEngine.MODE_BOUNDS.run;
+      const wr = MetronomeEngine.MODE_BOUNDS.walk_ruck;
+      if (!r || !wr) return { ok: false, violations: ['MODE_BOUNDS missing entries'] };
+      if (wr.max >= r.min) {
+        return { ok: false, violations: [`walk_ruck.max ${wr.max} >= run.min ${r.min}`] };
+      }
+      return { ok: true, violations: [] };
+    }
+  },
+  // --- Intensity ladder consistency ---
+  {
+    name: 'Intensity_ladder_covers_PLAN_WORKOUTS_intensities',
+    severity: 'hard',
+    claimedBy: 'P19 AdaptationDecision',
+    description: 'Every intensity used in PLAN_WORKOUTS must be in INTENSITY_LADDER or be "rest".',
+    check() {
+      const known = new Set([...INTENSITY_LADDER, 'rest']);
+      const found = new Set();
+      for (const [key, w] of Object.entries(PLAN_WORKOUTS)) {
+        if (w && typeof w.intensity === 'string') found.add(w.intensity);
+      }
+      const violations = [];
+      for (const intensity of found) {
+        if (!known.has(intensity)) {
+          violations.push(`PLAN_WORKOUTS uses intensity '${intensity}' not in INTENSITY_LADDER`);
+        }
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  // --- Banister constants ---
+  {
+    name: 'Banister_published_time_constants',
+    severity: 'hard',
+    claimedBy: 'P14 FormFitnessFatigue',
+    description: 'τ_fitness=42d, τ_fatigue=7d, k=2.0 (Banister 1991, Busso 2003).',
+    check() {
+      const violations = [];
+      if (FFF_TAU_FITNESS_DAYS !== 42) {
+        violations.push(`FFF_TAU_FITNESS_DAYS = ${FFF_TAU_FITNESS_DAYS}, expected 42`);
+      }
+      if (FFF_TAU_FATIGUE_DAYS !== 7) {
+        violations.push(`FFF_TAU_FATIGUE_DAYS = ${FFF_TAU_FATIGUE_DAYS}, expected 7`);
+      }
+      if (FFF_FORM_K !== 2.0) {
+        violations.push(`FFF_FORM_K = ${FFF_FORM_K}, expected 2.0`);
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  },
+  // --- New v1.8 template invariants ---
+  {
+    name: 'Marathon_long_run_durations_present',
+    severity: 'hard',
+    claimedBy: 'F-PLAN-GENERATE marathon-18wk',
+    description: 'Marathon plan needs long runs ≥165 min (Pfitzinger peak), required by 18wk template.',
+    check() {
+      const required = ['LONG_RUN_135', 'LONG_RUN_150', 'LONG_RUN_165', 'LONG_RUN_180'];
+      const violations = [];
+      for (const k of required) {
+        if (!PLAN_WORKOUTS[k]) violations.push(`PLAN_WORKOUTS missing ${k}`);
+      }
+      return { ok: violations.length === 0, violations };
+    }
+  }
+];
+
+class RegistryInvariants {
+  // Run every invariant. Returns {ok, results: [{name, ok, violations}]}.
+  static runAll() {
+    const results = [];
+    let allOk = true;
+    for (const inv of REGISTRY_INVARIANTS) {
+      let r;
+      try {
+        r = inv.check();
+      } catch (e) {
+        r = { ok: false, violations: ['threw: ' + (e && e.message || e)] };
+      }
+      results.push({
+        name: inv.name,
+        severity: inv.severity,
+        claimedBy: inv.claimedBy,
+        description: inv.description,
+        ok: r.ok,
+        violations: r.violations || []
+      });
+      if (!r.ok && inv.severity === 'hard') allOk = false;
+    }
+    return { ok: allOk, results };
+  }
+
+  // Run on boot. Logs a warning if any hard invariant fails, but does not
+  // throw — we want the app to still load and surface the issue rather
+  // than refuse to start. The test suite catches these structurally.
+  static assertOnBoot() {
+    try {
+      const r = RegistryInvariants.runAll();
+      if (!r.ok) {
+        const failed = r.results.filter(x => !x.ok);
+        console.warn('[FORGE-GATE] %d invariants failed at boot:', failed.length);
+        for (const f of failed) {
+          console.warn(`  - ${f.name} (${f.claimedBy}): ${f.violations.join('; ')}`);
+        }
+      }
+      return r;
+    } catch (e) {
+      console.warn('[FORGE-GATE] runner threw:', e);
+      return { ok: false, results: [], error: String(e) };
+    }
+  }
+}
+
+// Boot-time gate: surface configuration drift on app startup. Non-fatal;
+// the gate's purpose is detection, not refusal to launch.
+RegistryInvariants.assertOnBoot();
 
 function defaultSettings() {
   return {
@@ -6752,7 +7273,7 @@ function renderHome(root) {
           // user to ask for a "5K ruck plan."
           distSeg.querySelectorAll('[data-gen-dist]').forEach(b => {
             const m = parseInt(b.dataset.genDist, 10);
-            const isRunDist = m === 5000 || m === 10000 || m === 21097;
+            const isRunDist = m === 5000 || m === 10000 || m === 21097 || m === 42195;
             const wantRun = genMode === 'run';
             if (isRunDist === wantRun) {
               b.classList.remove('hidden');

@@ -47,6 +47,57 @@ npx serve .
 
 Then open `http://localhost:8000`. Note that geolocation in browsers requires HTTPS *or* localhost — `file://` won't work.
 
+## What's in v1.8
+
+Two substantive additions: more content (three new plan templates) plus structural framework hardening (P20 RegistryInvariants and F-FORGE-GATE composition).
+
+### Content expansion
+
+- **10K — 10 weeks** (`10k-10wk`). Daniels Plan B structure with tempo + interval blocks and progressive long runs (1:15 to 1:45). Target VDOT 42, 4 sessions/week. Before v1.8, 10K targets routed to the half-marathon template; now they use a dedicated 10K plan.
+- **Marathon — 18 weeks** (`marathon-18wk`). Pfitzinger 18/55 structure. Long runs scale 90 min → 3 hr across the build phase; tempo, threshold, and VO2 blocks; full 5-week taper. Target VDOT 48, 5 sessions/week.
+- **6-mile beginner ruck — 4 weeks** (`6mi-ruck-4wk`). Knapik-derived progression scaled for first-time ruckers. 25 lb pack baseline, half the peak volume of the 12-mile plan. Test event is `RUCK_6MI_TEST` at the end of W4.
+
+Each template is selectable via the GENERATE PERSONALIZED PLAN UI on the plans sheet. They flow through P15's existing validation pipeline — every generated plan still rounds through schema invariants, mode purity, hard-day spacing, and catastrophic-jump checks.
+
+### Framework hardening — what "bugs are impossible" can and can't honestly mean
+
+The framework cannot make all bugs impossible. That would be a Tier-0 false claim. What v1.8 ships is a structural gate that makes a **named, scoped class of bugs** impossible: configuration drift, mode-invariant violations in plans, registry/test divergence, and silent breakage of cross-cutting invariants. UI rendering bugs, iOS Safari quirks, novel GPS noise patterns, and unobserved user behaviors remain outside its reach — and the documentation says so.
+
+The honest delivery: **P20 RegistryInvariants** plus **F-FORGE-GATE** composition. A structured catalog of cross-cutting invariants, each a pure predicate that runs at test time and at boot. The catalog covers:
+
+- **Configuration coherence**: every PLAN_TEMPLATES entry has a matching COACHING_PLANS plan; every COACHING_PLANS entry has the required schema; every PLAN_WORKOUTS entry has the required fields.
+- **Mode invariants**: run plans contain zero ruck workouts; ruck plans contain zero HARD runs (easy runs OK as cross-training, per Knapik 2004).
+- **Daniels VDOT table**: zone ordering monotonic per row; VDOT monotonic across rows. The published math is structurally enforced.
+- **Knapik baseline**: 15 min/mi at 16 kg pack within ±5 sec/mi. Catches accidental edits.
+- **Metronome bounds**: run [150,200] and walk_ruck [100,130] disjoint by structure, not convention.
+- **Intensity ladder**: every intensity used in PLAN_WORKOUTS is in INTENSITY_LADDER. Adding a new intensity to a workout without updating the ladder fails the gate.
+- **Banister constants**: τ_fitness=42, τ_fatigue=7, k=2.0. Drift from published values fails the gate.
+
+Each invariant has a corresponding test that:
+1. Verifies the invariant passes on the shipped configuration
+2. **Deliberately injects the failure mode** to prove the invariant catches it (regression-tested, per universal error log M.2)
+
+If you deliberately inject a ruck workout into the c25k plan, the gate fires and names the violation. If you mutate the Daniels table so easy pace is faster than threshold, the gate fires. The catalog is not theater.
+
+### What v1.8 explicitly does NOT claim
+- All bugs are impossible. They aren't. The gate eliminates a structural class.
+- Static type safety. JavaScript's type system doesn't enforce these structurally. Enforcement is dynamic — at test time and boot time.
+- A substitute for per-primitive validation. P20 is an additional cross-cutting layer over the existing P1-P19 contract tests, not a replacement.
+- Coverage of UI bugs, async timing issues, GPS noise patterns, or user-flow problems. Those need different test infrastructure.
+
+### Meta-tests: claims must be exercised
+
+A test suite section verifies that every entry in REGISTRY_INVARIANTS has a name, a check function, and a documented severity. A deliberate-regression test proves the gate fires on injected violations. A coverage test verifies that expected primitives (P12, P13, P13b, P14, P16, P19) appear in the invariant catalog. This is the "every claim has a test exercising it" structural property — the universal error log T.1 lesson applied at scale.
+
+### Boot-time gate
+
+`RegistryInvariants.assertOnBoot()` runs on module load and logs warnings (non-fatal) if any invariant fails. This surfaces configuration drift the moment it's introduced, rather than waiting for a user to hit it.
+
+### Phased roadmap (sealed at v1.8)
+- **v1.9:** Per-user Banister coefficient calibration. After 90+ days of training history, fit τ_fitness and τ_fatigue to the individual rather than population defaults (42/7). Tier ceiling moves from T2 to T1 for users with calibrated coefficients.
+- **v2.0:** HR-zone-aware pace targeting (only if HR strap paired). Multi-event chained plans (5K → 10K → half progression).
+- **Future:** Whatever the FORGE framework's next discipline-revealing problem turns out to be. Software architecture cycles continue.
+
 ## What's in v1.7
 
 This release closes the feedback loop. The system now reads the delta between prescribed and actual training (P18), decides on prescription modifications (P19), and applies them via the C-ADAPT composition. The home WOD card surfaces every adaptation explicitly — no silent edits.

@@ -198,6 +198,22 @@ Each primitive declares: its source location, its contract (what it promises to 
   - HR-zone-driven adaptation. HR is lagged.
   - Predictive adaptation. The decision reads current state; it doesn't predict tomorrow's state.
 
+### P20 RegistryInvariants (v1.8)
+- **Source:** `app.js`, object `REGISTRY_INVARIANTS` plus class `RegistryInvariants`
+- **Contract:** A structured catalog of cross-cutting invariants over the entire FORGE registry. Each entry has:
+  - `name`: human-readable identifier
+  - `claimedBy`: which primitive(s) or composition(s) make the claim
+  - `check(state)`: pure function returning `{ok: boolean, violations: [...]}`
+  - `severity`: 'hard' (build-fails) vs 'soft' (warns but doesn't fail)
+- The runner `RegistryInvariants.runAll(state)` executes every registered check against the current module state, returning `{ok: boolean, results: [...]}`. The meta-test in the test suite verifies that every claimed invariant is exercised by at least one test.
+- **Tier:** T1
+- **Justification:** This primitive's behavior is mechanical — it walks a structured catalog and runs pure predicates. The predicates themselves inherit the tier of the claims they encode. The runner is T1 mechanically; what it RUNS has whatever tier the underlying claim has.
+- **Falsification:** Deliberately introduce a violation of a registered invariant (e.g., insert a ruck workout into a run plan's weeks array). `runAll()` must return `ok: false` with that violation enumerated. Without such a check, the invariant catalog is theater.
+- **Out-of-scope:**
+  - Claiming "all bugs are impossible." This module makes a *named, scoped* class of bugs structurally impossible. UI rendering, platform quirks, and unobserved real-world patterns are outside its reach.
+  - Replacing primitive-level validation. Each primitive still owns its own tests; this is an additional cross-cutting layer.
+  - Static analysis. The checks run at test time / boot time, not at AST-parse time. JavaScript's type system doesn't enforce these structurally; we enforce them dynamically.
+
 ---
 
 ## §3 Composition rules and tier propagation
@@ -446,6 +462,24 @@ Each proposed v1.3 feature is decomposed against the registry. New primitives re
   - Adapting toward harder work. Pace was faster than prescribed AND Form is healthy → keep the prescription as-is. The plan's hard work is the stimulus; we don't amplify it ad hoc.
   - HR-driven adaptation. HR is lagged.
   - Predictive adaptation. The decision reads current state; it doesn't predict tomorrow's state.
+
+### F-FORGE-GATE: Cross-cutting invariant runner (v1.8)
+- **Composition:** P20 RegistryInvariants applied to the entire module state. Pure C-FILTER over a structured catalog.
+- **Tier ceiling:** Inherits worst-case tier of any failed check, but the *runner itself* is T1.
+- **Surface:** Test suite meta-section that executes every registered invariant. Build fails if any 'hard' invariant returns violations. Optionally exposed at boot via `RegistryInvariants.assertOnBoot()` for early detection of configuration drift.
+- **Invariants enforced (initial catalog, expandable):**
+  1. **Every primitive in PLAN_TEMPLATES has a corresponding entry in COACHING_PLANS.** Configuration drift would mean a generator could produce a plan id that PlanState can't resolve.
+  2. **Mode invariant across COACHING_PLANS.** Every plan whose id starts with `c25k` / `half-marathon` / `10k-` / `marathon-` contains zero ruck workouts. Every plan whose id starts with `ruck-` / `12mi-ruck` / `6mi-ruck` contains zero HARD run workouts. Easy runs allowed in ruck plans (cross-training per Knapik).
+  3. **Daniels VDOT table monotonicity.** For every VDOT row in DANIELS_PACE_TABLE, zone paces must be ordered easy > marathon > threshold > interval > repetition (sec/mi, larger = slower). For every column, faster VDOTs must have faster paces.
+  4. **Knapik baseline consistency.** RuckPaceTargets.compute at packKg=16 must return standard pace within ±5 sec/mi of 900 (Knapik baseline). This catches accidental edits to the underlying constants.
+  5. **Metronome bound disjointness.** MetronomeEngine.MODE_BOUNDS for run and walk_ruck must not overlap. The cross-cutting run/ruck invariant requires this structurally.
+  6. **Intensity ladder consistency.** Every intensity used in PLAN_WORKOUTS (excluding rest) must be present in INTENSITY_LADDER. P19 AdaptationDecision walks the ladder; a workout with an unknown intensity would cause silent skip.
+  7. **Banister constants present.** FFF_TAU_FITNESS_DAYS, FFF_TAU_FATIGUE_DAYS, FFF_FORM_K must be defined with the published values (42, 7, 2.0). Catches accidental override.
+  8. **PLAN_WORKOUTS schema completeness.** Every entry must have {label, description, mode, durationMin, intensity}. Catches accidental field omission when adding new workouts.
+- **What this composition explicitly does NOT claim:**
+  - "All bugs are impossible." The gate makes a *named, scoped* class of bugs structurally impossible. UI rendering, platform-specific quirks, and unobserved real-world patterns remain outside its reach. This is documented in P20's contract.
+  - Static type safety. JavaScript's type system doesn't enforce these structurally. Enforcement is dynamic (test-time / boot-time), not compile-time.
+  - Replacing primitive-level validation. Each primitive still owns its own tests. F-FORGE-GATE is an additional cross-cutting layer, not a substitute.
 
 ### Run/ruck differentiation (cross-cutting invariant)
 - All pace-related and cadence-related primitives MUST honor mode. The registry forbids any composition that:
