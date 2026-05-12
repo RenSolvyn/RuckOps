@@ -167,6 +167,37 @@ Each primitive declares: its source location, its contract (what it promises to 
   - HR-zone-primary prescription. Pace targets stay the anchor; HR is supplementary.
   - "Optimal" claims. We produce *plausible defensible* plans, not optimal ones for any individual.
 
+### P18 CompletionDelta
+- **Source:** `app.js`, class `CompletionDelta`
+- **Contract:** Pure function. Given a workout record (from Workouts.list()) and the prescription it was started from, returns `{durationCompletionRatio, pacingDeltaSecPerMi, intensityFulfilled}`:
+  - `durationCompletionRatio = workout.durationMs / prescription.targetDurationMs` (1.0 = exact, <1.0 = stopped short, >1.0 = went longer)
+  - `pacingDeltaSecPerMi` = observed pace minus prescribed pace zone target (in sec/mi; negative = faster than prescribed, positive = slower)
+  - `intensityFulfilled` = boolean, whether the user's observed pace falls within the prescription's intensity zone (with ±10% tolerance per Daniels)
+  - Returns null if either input is malformed (freestyle workouts, missing distance, etc.)
+- **Tier:** T1
+- **Justification:** Literally a structural comparison of two numbers. No model assumptions. The math is observed/prescribed ratios; no inference about cause.
+- **Falsification:** Identical observed and prescribed values must produce delta = 0 and ratio = 1.0. A workout 30% shorter than prescribed must produce ratio ≈ 0.7. A workout pace 30 sec/mi slower must produce pacingDelta ≈ +30.
+
+### P19 AdaptationDecision
+- **Source:** `app.js`, class `AdaptationDecision`
+- **Contract:** Given `{recentDeltas, currentForm, formBaseline, prescription}`, returns one of:
+  - `{action: 'continue', reason}` — no modification, plan as-is
+  - `{action: 'ease_intensity', from, to, reason}` — soften the intensity tag one level (hard→moderate, moderate→easy). Never escalates.
+  - `{action: 'reduce_duration', factor, reason}` — multiply prescribed duration by `factor` (clamped to [0.65, 1.0]); never extends.
+  - `{action: 'continue', reason: 'insufficient_data'}` — if fewer than 3 recent completion deltas or no Form baseline exists
+  - The decision can combine: a single response may carry both ease_intensity AND reduce_duration when warranted, but ease_intensity alone never escalates and reduce_duration alone never extends.
+- **Tier:** T2
+- **Justification:** Decision boundaries (e.g., "trigger ease when pace delta median +20 sec/mi AND Form z-score below -0.5") are heuristic. The math is correct; the *thresholds* are calibration choices not RCT-validated for individuals.
+- **Falsification:**
+  - Consistent positive pace delta (user slower than prescribed) AND Form z-score < -0.5 must produce ease/reduce action, not continue.
+  - All-fast deltas + healthy Form must produce continue (NOT escalate; one-way easing only).
+  - Empty recentDeltas must produce continue with reason 'insufficient_data'.
+  - Action never produces from=easy, to=anything-harder (one-way easing invariant).
+- **Out-of-scope:**
+  - Generated coaching text. The reason field is short structural ("pace delta +25s/mi over 5 sessions, Form -1.2σ"), not prose advice.
+  - HR-zone-driven adaptation. HR is lagged.
+  - Predictive adaptation. The decision reads current state; it doesn't predict tomorrow's state.
+
 ---
 
 ## §3 Composition rules and tier propagation
@@ -234,6 +265,20 @@ Each rule defines how primitives combine to produce a feature, and what tier the
   5. Hard-day spacing: no two hard sessions (intensity ∈ {tempo, hard, test}) on consecutive days within the same week.
   6. Bounded scaling: volume scaling factor clamped to [0.6, 1.4] of template defaults. Past this, the underlying template is the wrong starting point and the rule should refuse rather than produce a 3-hour beginner easy run.
 - **Constraint on the scaling policy:** policy itself is heuristic (not RCT-validated), so its tier is T2 even when inputs are T1. This is the structural reason a generated plan's tier ceiling is T2.
+
+### C-ADAPT
+- **Form:** `C-ADAPT(F-PLAN.prescription, F-FFF.formScore, P18.completionDeltas, adaptation_policy) → modified prescription + provenance`
+- **Tier law:** `tier(output) = max(prescription_tier, form_tier, delta_tier, policy_tier)`. With current primitives = max(T2, T2, T1, T2) = T2.
+- **Examples:** Today's prescription is "Tempo 4mi". Recent 5 completions show consistent +25 sec/mi pace slower than threshold target. Current Form is 1.2σ below user's median. C-ADAPT replaces prescription with "Easy run, 32min" (ease intensity + reduce duration). Provenance: "eased due to pace delta +25s/mi over 5 sessions and Form -1.2σ".
+- **Hard invariants (rule refuses any output violating these):**
+  1. **One-way easing.** Adaptation never escalates intensity. easy is the floor; you cannot get from easy → moderate → hard via adaptation. The plan's prescribed hard work is the stimulus structure; the system can offer to ease it, not amplify it.
+  2. **No rest-day removal.** Scheduled rest days are the plan's injury-prevention mechanism. Adaptation may NEVER convert a rest day into work (the F-PLAN-OVERRIDE v2 can convert work→rest, but adaptation cannot convert rest→work).
+  3. **No compounding.** Adaptation reads CURRENT state fresh on every call. There is no accumulated "adaptation budget", "pace credit", or integral term that could drift unbounded over a multi-week plan. Each day's decision stands alone, derived from the last 7-14 days of completion history and the current Form score.
+  4. **Bounded duration modification.** Duration scaling factor ∈ [0.65, 1.0]. Cannot extend prescribed duration; cannot reduce by more than 35%. Past 35% reduction, the prescription is effectively cancelled and F-PLAN-OVERRIDE should be the active rule (override to rest), not C-ADAPT.
+  5. **Insufficient-signal default.** When recentDeltas has <3 entries or formBaseline is null, the rule returns 'continue' (plan as-is). No adapting from noise.
+  6. **Provenance always attached.** Every adapted prescription carries a `meta` block: `{adapted: true, fromAction, fromIntensity?, factor?, reason}`. The user sees what was adapted and why. Silent modification of prescriptions would violate U.1 (honesty over engagement) from the universal error log.
+- **Constraint on the adaptation policy:** policy itself is T2 (heuristic decision boundaries). This is the structural reason an adapted prescription's tier ceiling is T2 even when other components are T1.
+- **Interaction with F-PLAN-OVERRIDE v2:** Adaptation runs FIRST (soft adjustment), then F-PLAN-OVERRIDE v2 may further convert work→rest if Form is severely depressed. The hierarchy is: ADAPT (ease intensity/duration) < OVERRIDE (full rest). A workout that's been eased by ADAPT can still be vetoed by OVERRIDE on the same day if Form drops sharply.
 
 ---
 
@@ -379,6 +424,28 @@ Each proposed v1.3 feature is decomposed against the registry. New primitives re
   - Plans outside the supported template envelope (50+ mi rucks, ultra distances, multi-day events).
   - First-principles generation. Every generated plan traces to a published template.
   - Per-session HR prescription as primary. HR remains supplementary.
+
+### F-ADAPT-PLAN: Daily adaptive prescription (v1.7)
+- **Composition:** `C-ADAPT(F-PLAN.today, F-FFF.formScore, P18.recentDeltas, adaptation_policy)` through P19 AdaptationDecision. The output is the adapted prescription rendered on the home WOD card with explicit provenance.
+- **Tier ceiling:** `max(T2, T2, T1, T2) = T2`.
+- **Surface:** WOD card on home screen. When adaptation fires, the card subtitle includes a small italic "eased: <reason>" line so the user sees what changed and why. Settings toggle "Adaptive prescription" defaults ON but can be disabled per session or globally.
+- **Decision flow (per home-screen render):**
+  1. PlanState.today() produces base prescription.
+  2. F-ADAPT-PLAN reads (last 7 days of completion deltas, current Form, user baseline). Optionally returns adapted prescription.
+  3. F-PLAN-OVERRIDE v2 still runs on the (possibly adapted) prescription. Hard intensity may still be vetoed entirely if Form drops sharply.
+- **Provenance contract:** every adapted prescription carries `meta.adapted = true` plus the originating action and reason. The WOD-card UI surfaces this so the user can see when the system has modified their plan. NO silent adaptation.
+- **Validation:**
+  - User with no completion history → continue (insufficient signal).
+  - User with consistent positive pace delta + low Form → ease/reduce action fires.
+  - User with consistent fast deltas + healthy Form → continue (one-way easing invariant, no escalation).
+  - Adaptation never converts rest → work.
+  - User-disabled adaptation produces continue regardless of state.
+- **Explicitly out-of-scope:**
+  - Coaching text generation ("you should run easier today because..."). The provenance is structural; we don't produce prose advice.
+  - Adapting based on a single workout. Three-session minimum for stable signal.
+  - Adapting toward harder work. Pace was faster than prescribed AND Form is healthy → keep the prescription as-is. The plan's hard work is the stimulus; we don't amplify it ad hoc.
+  - HR-driven adaptation. HR is lagged.
+  - Predictive adaptation. The decision reads current state; it doesn't predict tomorrow's state.
 
 ### Run/ruck differentiation (cross-cutting invariant)
 - All pace-related and cadence-related primitives MUST honor mode. The registry forbids any composition that:

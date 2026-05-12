@@ -3152,6 +3152,276 @@ class PlanGenerator {
   }
 }
 
+// =====================================================================
+// P18 CompletionDelta — structural delta between prescription and reality
+// =====================================================================
+// Per COMPOSITION_REGISTRY.md §2 P18:
+//
+//   Pure function. Given a workout record and the prescription it was
+//   started from, return:
+//     {durationCompletionRatio, pacingDeltaSecPerMi, intensityFulfilled}
+//
+//   Tier: T1 — literally a comparison of two numbers. No model assumptions.
+//
+// What "prescription" looks like here: it's the PLAN_WORKOUTS entry the
+// user started the workout from. PlanState.completions[].recordId points to
+// the actual Workouts record; the prescription is reconstructible from
+// PlanState's plan-day-index. For freestyle workouts (no plan-day-index),
+// this primitive returns null — there was nothing to compare to.
+
+class CompletionDelta {
+  // Main entry. Returns null on malformed input.
+  static compute({ workout, prescription, userVdot, userPackKg }) {
+    if (!workout || !prescription) return null;
+    if (!(workout.durationMs > 0) || !(workout.distanceM > 0)) return null;
+    if (prescription.intensity === 'rest') return null;  // rest has no metrics
+
+    // 1. Duration completion ratio
+    const prescribedDurationMs = (prescription.durationMin || 0) * 60_000;
+    const durationCompletionRatio = prescribedDurationMs > 0
+      ? workout.durationMs / prescribedDurationMs
+      : null;
+
+    // 2. Pace delta (observed vs prescribed zone target)
+    const observedSecPerMi = (workout.durationMs / 1000) / (workout.distanceM / 1609.344);
+    let prescribedSecPerMi = null;
+    if (prescription.mode === 'run' && userVdot) {
+      const z = PaceZones._zonesFromVdot(userVdot);
+      if (z) {
+        // Map intensity → zone pace
+        const intensityZoneMap = {
+          easy: z.easy,
+          moderate: z.marathon,
+          tempo: z.threshold,
+          hard: z.interval,
+          test: z.interval  // race effort ≈ interval pace
+        };
+        prescribedSecPerMi = intensityZoneMap[prescription.intensity] || null;
+      }
+    } else if (prescription.mode === 'ruck' && userPackKg) {
+      const t = RuckPaceTargets.compute({
+        packKg: userPackKg, observedRuckPaces: [], mode: 'ruck'
+      });
+      if (t) {
+        const intensityZoneMap = {
+          easy: t.easy,
+          moderate: t.standard,
+          tempo: t.tempo
+        };
+        prescribedSecPerMi = intensityZoneMap[prescription.intensity] || t.standard;
+      }
+    }
+    const pacingDeltaSecPerMi = prescribedSecPerMi != null
+      ? Math.round(observedSecPerMi - prescribedSecPerMi)
+      : null;
+
+    // 3. Intensity fulfilled: within ±10% of prescribed pace?
+    // Daniels: "easy" has a band of ~20% on the slow side acceptable.
+    // For other zones, ±10% is the working range. We use a single 10% test
+    // for simplicity; the easy zone's tolerance is asymmetric in practice.
+    let intensityFulfilled = null;
+    if (prescribedSecPerMi != null && observedSecPerMi > 0) {
+      const ratio = observedSecPerMi / prescribedSecPerMi;
+      // For "easy", allow slower (up to 1.25× target = 25% slower); reject only if much faster.
+      // For other zones, ±10% both directions.
+      if (prescription.intensity === 'easy') {
+        intensityFulfilled = ratio >= 0.85 && ratio <= 1.25;
+      } else {
+        intensityFulfilled = ratio >= 0.90 && ratio <= 1.10;
+      }
+    }
+
+    return {
+      durationCompletionRatio: durationCompletionRatio != null
+        ? Math.round(durationCompletionRatio * 100) / 100
+        : null,
+      pacingDeltaSecPerMi,
+      intensityFulfilled,
+      // Surface inputs for debugging / provenance
+      observedSecPerMi: Math.round(observedSecPerMi),
+      prescribedSecPerMi
+    };
+  }
+
+  // Assemble a history of recent deltas from PlanState completions.
+  // Walks recent completion entries, resolves each to its (workout, prescription)
+  // pair, computes the delta. Bounded to last `windowDays` (default 14).
+  static recentHistory({ planState, allWorkouts, userVdot, userPackKg, windowDays = 14, refMs = Date.now() }) {
+    if (!planState || !planState.isActive()) return [];
+    const plan = planState.plan();
+    if (!plan || !plan.weeks) return [];
+    const cutoffMs = refMs - windowDays * 24 * 60 * 60 * 1000;
+    const out = [];
+    for (const c of planState.completions || []) {
+      if (!c || !c.completedAt) continue;
+      if (c.completedAt < cutoffMs) continue;
+      // Resolve the workout record
+      const workout = (allWorkouts || []).find(w => w.id === c.recordId);
+      if (!workout) continue;
+      // Resolve the prescription: day index → week/day → prescription
+      const dayIdx = c.day;
+      if (dayIdx == null) continue;
+      const weekIdx = Math.floor(dayIdx / 7);
+      const dayInWeekIdx = dayIdx % 7;
+      const prescription = plan.weeks[weekIdx]?.[dayInWeekIdx];
+      if (!prescription) continue;
+      const delta = CompletionDelta.compute({
+        workout, prescription, userVdot, userPackKg
+      });
+      if (delta) out.push({ ...delta, completedAt: c.completedAt, day: dayIdx });
+    }
+    return out;
+  }
+}
+
+// =====================================================================
+// P19 AdaptationDecision — decide on prescription modification
+// =====================================================================
+// Per COMPOSITION_REGISTRY.md §2 P19:
+//
+//   Given {recentDeltas, currentForm, formBaseline, prescription}, return
+//   one of:
+//     {action: 'continue', reason}
+//     {action: 'ease_intensity', from, to, reason, factor?}
+//     {action: 'reduce_duration', factor, reason}
+//   The decision can combine ease_intensity + reduce_duration in one
+//   response.
+//
+//   Tier: T2 — decision boundaries are heuristic.
+
+const INTENSITY_LADDER = ['easy', 'moderate', 'tempo', 'hard', 'test'];
+
+class AdaptationDecision {
+  // Main entry.
+  static decide({ recentDeltas, currentForm, formBaseline, prescription }) {
+    if (!prescription) {
+      return { action: 'continue', reason: 'no_prescription' };
+    }
+    // Never adapt rest days
+    if (prescription.intensity === 'rest') {
+      return { action: 'continue', reason: 'rest_day_preserved' };
+    }
+    // Insufficient signal: <3 deltas or no Form baseline
+    if (!Array.isArray(recentDeltas) || recentDeltas.length < 3) {
+      return { action: 'continue', reason: 'insufficient_completion_history' };
+    }
+    if (!formBaseline || !(formBaseline.stdev > 0)) {
+      return { action: 'continue', reason: 'insufficient_form_baseline' };
+    }
+    if (currentForm == null) {
+      return { action: 'continue', reason: 'no_current_form_score' };
+    }
+
+    // Compute summary stats over recent deltas
+    const paceDeltas = recentDeltas
+      .map(d => d.pacingDeltaSecPerMi)
+      .filter(p => p != null);
+    const durationRatios = recentDeltas
+      .map(d => d.durationCompletionRatio)
+      .filter(r => r != null);
+    const medianPaceDelta = AdaptationDecision._median(paceDeltas);
+    const medianDurationRatio = AdaptationDecision._median(durationRatios);
+    const formZ = (currentForm - formBaseline.median) / formBaseline.stdev;
+
+    // Decision boundaries (heuristic — these are the calibration choices
+    // that earn this primitive its T2 tier rather than T1).
+    //
+    // Trigger easing when EITHER:
+    //   - Form z-score < -0.5 (user is below their own norm) AND
+    //     median pace delta > +15 sec/mi (consistently slower than prescribed)
+    //   - Median pace delta > +30 sec/mi alone (clearly slower regardless of Form)
+    //   - Median duration completion < 0.85 (consistently stopping short)
+    const formIsDown = formZ < -0.5;
+    const paceConsistentlySlower = medianPaceDelta > 15;
+    const paceStronglySlower = medianPaceDelta > 30;
+    const stoppingShort = medianDurationRatio != null && medianDurationRatio < 0.85;
+
+    let action = null;
+    let reason = null;
+    let factor = null;
+    let fromIntensity = null;
+    let toIntensity = null;
+
+    if ((formIsDown && paceConsistentlySlower) || paceStronglySlower) {
+      // Ease intensity one rung on the ladder if currently above easy.
+      const curIdx = INTENSITY_LADDER.indexOf(prescription.intensity);
+      if (curIdx > 0) {
+        fromIntensity = prescription.intensity;
+        toIntensity = INTENSITY_LADDER[curIdx - 1];
+        action = 'ease_intensity';
+        reason = formIsDown
+          ? `Form ${formZ.toFixed(1)}σ below norm + pace median +${medianPaceDelta.toFixed(0)}s/mi over ${recentDeltas.length} sessions`
+          : `Pace median +${medianPaceDelta.toFixed(0)}s/mi over ${recentDeltas.length} sessions`;
+      } else {
+        // Already easy; can't ease intensity further. Use duration reduction.
+        action = 'reduce_duration';
+        factor = 0.85;
+        reason = `Easy already; pace median +${medianPaceDelta.toFixed(0)}s/mi suggests shorter session`;
+      }
+    } else if (stoppingShort) {
+      // User keeps stopping short; reduce prescribed duration to match
+      // reality. Bounded at -35% per registry constraint.
+      action = 'reduce_duration';
+      // Set factor close to the median actual completion, but never below 0.65
+      factor = Math.max(0.65, Math.min(1.0, medianDurationRatio));
+      reason = `Median completion ${(medianDurationRatio * 100).toFixed(0)}% of prescribed over ${recentDeltas.length} sessions`;
+    } else {
+      // Plan as-is. Note: even if user is faster than prescribed AND Form is
+      // healthy, we DO NOT escalate. One-way easing invariant.
+      return {
+        action: 'continue',
+        reason: `pace median ${medianPaceDelta >= 0 ? '+' : ''}${medianPaceDelta.toFixed(0)}s/mi, Form z=${formZ.toFixed(1)}`
+      };
+    }
+
+    return {
+      action,
+      from: fromIntensity,
+      to: toIntensity,
+      factor,
+      reason
+    };
+  }
+
+  static _median(arr) {
+    if (!arr || arr.length === 0) return null;
+    const s = arr.slice().sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  // Apply a decision to a prescription, producing the adapted prescription
+  // object with provenance metadata. Pure function; no side effects.
+  // Returns the original prescription if action='continue'.
+  static apply(decision, prescription) {
+    if (!decision || decision.action === 'continue') return prescription;
+    if (!prescription) return prescription;
+    const out = { ...prescription, meta: {
+      ...(prescription.meta || {}),
+      adapted: true,
+      fromAction: decision.action,
+      reason: decision.reason
+    }};
+    if (decision.action === 'ease_intensity' && decision.to) {
+      out.intensity = decision.to;
+      out.meta.fromIntensity = decision.from;
+      out.meta.toIntensity = decision.to;
+      // Adjust label to reflect the eased intensity
+      out.label = `${out.label} (eased to ${decision.to})`;
+      // If also reducing duration in same call
+      if (decision.factor != null && decision.factor < 1.0) {
+        out.durationMin = Math.max(5, Math.round((out.durationMin || 0) * decision.factor));
+        out.meta.durationFactor = decision.factor;
+      }
+    } else if (decision.action === 'reduce_duration' && decision.factor != null) {
+      out.durationMin = Math.max(5, Math.round((out.durationMin || 0) * decision.factor));
+      out.meta.durationFactor = decision.factor;
+      out.label = `${out.label} (${Math.round(decision.factor * 100)}% duration)`;
+    }
+    return out;
+  }
+}
+
 function defaultSettings() {
   return {
     units: 'imperial',
@@ -3161,7 +3431,13 @@ function defaultSettings() {
     voiceCues: 'full',      // 'off' | 'minimal' | 'full' | 'verbose'
     soundEffects: true,
     anticipationSec: 10,
-    goalBehavior: 'continue'  // 'stop_at_goal' or 'continue' when a distance/time goal is met
+    goalBehavior: 'continue',  // 'stop_at_goal' or 'continue' when a distance/time goal is met
+    // F-ADAPT-PLAN (v1.7): adaptive prescription toggle. Default ON.
+    // When enabled, today's plan prescription may be eased based on Form
+    // trend + recent completion deltas. Provenance is always shown on
+    // the WOD card; no silent edits. Disable to always see the raw
+    // plan prescription.
+    adaptivePrescription: true
   };
 }
 
@@ -6124,10 +6400,59 @@ function renderHome(root) {
 
   let wod;
   let planOverrideActive = false;
+  let adaptedFromIntensity = null;
+  let adaptationReason = null;
 
   if (planPrescription && planPrescription.workout) {
-    const w = planPrescription.workout;
+    let w = planPrescription.workout;
     const plan = planState.plan();
+
+    // F-ADAPT-PLAN composition (v1.7, per registry §6): apply C-ADAPT
+    // BEFORE F-PLAN-OVERRIDE v2. The hierarchy is:
+    //   - ADAPT (soft): ease intensity / reduce duration based on Form trend
+    //     + recent completion deltas. One-way easing only.
+    //   - OVERRIDE (hard): convert work → rest when Form drops sharply.
+    // A workout eased by ADAPT can still be vetoed by OVERRIDE the same day.
+    //
+    // Adaptation respects the user's setting (default ON). The setting
+    // toggle lives in profile settings; if missing, defaults true.
+    const adaptiveEnabled = settings.adaptivePrescription !== false;
+    if (adaptiveEnabled && fffScores && fffBaseline) {
+      // Resolve user VDOT / pack weight for P18
+      let userVdotForDelta = null;
+      if (profile.miTrialPaceSecPerMi) {
+        const z = PaceZones.compute({
+          distanceMi: 1, durationSec: profile.miTrialPaceSecPerMi, mode: 'run'
+        });
+        if (z) userVdotForDelta = z.vdot;
+      }
+      const userPackKgForDelta = Units.toWeightInternal(
+        settings.defaultPackWeight || 35, settings.units
+      );
+      // Compute recent deltas from PlanState completions
+      const recentDeltas = CompletionDelta.recentHistory({
+        planState,
+        allWorkouts,
+        userVdot: userVdotForDelta,
+        userPackKg: userPackKgForDelta,
+        windowDays: 14
+      });
+      // Run AdaptationDecision
+      const decision = AdaptationDecision.decide({
+        recentDeltas,
+        currentForm: fffScores.form,
+        formBaseline: fffBaseline,
+        prescription: w
+      });
+      if (decision.action !== 'continue') {
+        // Apply the decision; w is replaced with the adapted prescription
+        const adapted = AdaptationDecision.apply(decision, w);
+        adaptedFromIntensity = decision.from || null;
+        adaptationReason = decision.reason;
+        w = adapted;
+      }
+    }
+
     // F-PLAN-OVERRIDE v2 (per registry §6): Form-aware decision when ≥14
     // days history exists; ACWR fallback otherwise. Override fires only
     // for prescribed hard work — never for rest or easy days.
@@ -6177,8 +6502,19 @@ function renderHome(root) {
         packKg: w.packKg || null,
         intervals: w.intervals || null,
         description: w.description,
-        planWorkoutKey: Object.keys(PLAN_WORKOUTS).find(k => PLAN_WORKOUTS[k] === w),
-        isTest: !!w.isTest
+        // Look up against the ORIGINAL prescription, not the (possibly
+        // adapted) w. Adapted workouts are new object references with
+        // modified intensity/duration; the underlying plan-workout-key
+        // belongs to what was prescribed before adaptation.
+        planWorkoutKey: Object.keys(PLAN_WORKOUTS).find(
+          k => PLAN_WORKOUTS[k] === planPrescription.workout
+        ),
+        isTest: !!w.isTest,
+        // Pass through adaptation metadata so the live screen can show
+        // the user what was adapted from
+        adaptedFromIntensity: w.meta && w.meta.adapted ? (w.meta.fromIntensity || null) : null,
+        adapted: !!(w.meta && w.meta.adapted),
+        intensity: w.intensity
       };
     }
   } else {
@@ -6238,6 +6574,15 @@ function renderHome(root) {
       // Append the personalized pace target to the existing sub-line.
       wodSub.textContent = wod.sub + ' · ' + paceLine;
     }
+  }
+  // F-ADAPT-PLAN provenance surface: when today's prescription was adapted,
+  // show what changed and why. Honesty over engagement: the user sees the
+  // modification explicitly, no silent edits.
+  if (wod.kind === 'plan' && adaptationReason) {
+    const note = adaptedFromIntensity
+      ? ` · eased from ${adaptedFromIntensity}`
+      : ` · eased`;
+    wodSub.textContent = (wodSub.textContent || '') + note;
   }
   if (wod.kind === 'rest') {
     wodCard.classList.add('rest');
@@ -8520,6 +8865,7 @@ function renderProfile(root) {
   const voiceSel = node.querySelector('#set-voice');
   const soundsToggle = node.querySelector('#set-sounds');
   const antSel = node.querySelector('#set-anticipation');
+  const adaptToggle = node.querySelector('#set-adaptive');
 
   unitsSel.value = settings.units;
   packIn.value = Units.formatWeight(
@@ -8533,6 +8879,9 @@ function renderProfile(root) {
   voiceSel.value = settings.voiceCues || 'full';
   soundsToggle.checked = settings.soundEffects !== false;
   antSel.value = String(settings.anticipationSec != null ? settings.anticipationSec : 10);
+  if (adaptToggle) {
+    adaptToggle.checked = settings.adaptivePrescription !== false;
+  }
 
   function renderProfileTiles() {
     const cur = loadSettings();
@@ -8556,6 +8905,8 @@ function renderProfile(root) {
     }
     const apT = node.querySelector('#tile-autopause-val');
     if (apT) apT.textContent = cur.autoPause ? 'ON' : 'OFF';
+    const adaptT = node.querySelector('#tile-adaptive-val');
+    if (adaptT) adaptT.textContent = cur.adaptivePrescription !== false ? 'ON' : 'OFF';
     const coachT = node.querySelector('#tile-coaching2-val');
     if (coachT) {
       const v = cur.voiceCues || 'full';
@@ -8611,7 +8962,8 @@ function renderProfile(root) {
       autoPause: apToggle.checked,
       voiceCues: voiceSel.value,
       soundEffects: soundsToggle.checked,
-      anticipationSec: parseInt(antSel.value, 10) || 0
+      anticipationSec: parseInt(antSel.value, 10) || 0,
+      adaptivePrescription: adaptToggle ? adaptToggle.checked : true
     });
     applyUnits(node, u);
   }
@@ -8623,6 +8975,12 @@ function renderProfile(root) {
   voiceSel.addEventListener('change', () => { persist(); renderProfileTiles(); toast('Voice cues: ' + voiceSel.value, 'success'); });
   soundsToggle.addEventListener('change', () => { persist(); renderProfileTiles(); toast('Sound effects ' + (soundsToggle.checked ? 'on' : 'off'), 'success'); });
   antSel.addEventListener('change', () => { persist(); renderProfileTiles(); toast('Anticipation: ' + (antSel.value === '0' ? 'off' : antSel.value + 's'), 'success'); });
+  if (adaptToggle) {
+    adaptToggle.addEventListener('change', () => {
+      persist(); renderProfileTiles();
+      toast('Adaptive prescription ' + (adaptToggle.checked ? 'on' : 'off'), 'success');
+    });
+  }
 
   // Test sound button on profile
   const profileTest = node.querySelector('#profile-test-sound');

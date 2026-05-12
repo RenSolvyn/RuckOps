@@ -47,6 +47,44 @@ npx serve .
 
 Then open `http://localhost:8000`. Note that geolocation in browsers requires HTTPS *or* localhost — `file://` won't work.
 
+## What's in v1.7
+
+This release closes the feedback loop. The system now reads the delta between prescribed and actual training (P18), decides on prescription modifications (P19), and applies them via the C-ADAPT composition. The home WOD card surfaces every adaptation explicitly — no silent edits.
+
+- **F-ADAPT-PLAN — daily adaptive prescription (Tier 2).** Today's plan prescription is now read through C-ADAPT before it's rendered. The system pulls your last 14 days of completion deltas (pace vs prescribed zone, duration vs prescribed minutes), combines with your current Banister Form score, and decides one of: continue (no change), ease intensity one rung, or reduce duration. The decision rule:
+  - Pace consistently +15 sec/mi slower than prescribed AND Form 0.5σ below your norm → ease intensity (tempo → moderate, hard → moderate, etc.)
+  - Pace strongly slower (+30 sec/mi alone) → ease intensity regardless of Form
+  - Median completion < 85% of prescribed duration → reduce prescribed duration to match reality, bounded at 65%
+  - Insufficient signal (< 3 sessions or no Form baseline) → plan as-is
+- **One-way easing invariant.** Adaptation NEVER escalates intensity. Faster-than-prescribed pace plus healthy Form produces "continue" — the plan's hard work is the stimulus structure; the system can offer to ease it, not amplify it. This is a hard invariant in the C-ADAPT composition rule, structurally tested.
+- **No compounding.** Each day's decision reads current state fresh. There's no accumulated "adaptation budget" or integral term that could drift unbounded over a multi-week plan. Adaptation per day is bounded and stateless across days.
+- **Rest days are immutable to adaptation.** F-ADAPT-PLAN can soften work; only F-PLAN-OVERRIDE v2 (the harder veto rule from v1.5) can convert work to rest. Rest → work is never possible. The plan's rest pattern is the injury-prevention mechanism.
+- **Explicit provenance on every adaptation.** When today's prescription has been modified, the WOD card subtitle shows what changed: "PLAN — Week 6/12, Day 3/7 · Your tempo: 6:57/mi · eased from tempo". The label itself shows "(eased to moderate)". You always see what the system did.
+- **Settings toggle.** Profile → ADAPTIVE PRESCRIPTION. Default ON. Disable to always see the raw plan prescription regardless of recent training.
+
+### How the layers stack now (per-day prescription pipeline)
+1. **PlanState.today()** produces the raw scheduled workout from the plan template.
+2. **F-ADAPT-PLAN (this release)** may ease intensity or reduce duration based on Form trend + completion deltas.
+3. **F-PLAN-OVERRIDE v2 (v1.5)** may convert hard work to full rest when Form drops sharply.
+4. **F-PACE-ZONES (v1.4)** appends your personalized pace target to the WOD card.
+
+A workout eased by ADAPT can still be vetoed by OVERRIDE on the same day. The hierarchy is intentional: ADAPT (soft adjustment) < OVERRIDE (hard veto). If Form is mildly depressed, you get an easier workout. If Form is severely depressed, you get a rest day. The user always sees which rule fired and why.
+
+### What v1.7 deliberately did NOT do
+- **HR-driven adaptation.** HR is too lagged and individual-variable for per-session prescription modification. Pace is the anchor; HR remains supplementary.
+- **Coaching text generation.** The provenance reason field is short and structural ("pace median +25s/mi over 5 sessions, Form -1.2σ"), not prose advice. No LLM-style hallucinated coaching tips.
+- **Auto-extending plans when "feeling good."** Faster-than-prescribed pace produces "continue", not amplification. The plan's structure was committed to; ad-hoc extensions break it.
+- **Confidence intervals on individual outcome predictions.** We can't honestly produce them. The decision is a heuristic with explicit thresholds; we don't dress it up with bogus uncertainty quantification.
+- **Adapting based on a single workout.** Three-session minimum for stable signal. One bad workout doesn't trigger anything.
+
+### The feedback loop, now closed
+Prescription (F-PLAN) → execution (LiveWorkout) → load measurement (P14 sRPE / FFF) → Form score → P18 delta → P19 decision → adapted prescription (F-ADAPT-PLAN) → next day. Every arrow in that chain is a registered primitive or composition with its own tier ceiling and structural invariants. v1.8 onwards becomes content (more templates, more populations) rather than architecture.
+
+### Phased roadmap (sealed at v1.7)
+- **v1.8:** Template expansion — 10K-specific run template (currently routes through half-marathon), marathon template (Pfitzinger 18/55 or similar), beginner ruck template (4-week 6-mile preparation).
+- **v1.9:** Per-user Banister coefficient calibration. After 90+ days of training history, fit τ_fitness and τ_fatigue to the individual rather than using population defaults (42/7). Tier ceiling moves from T2 to T1 for users with calibrated coefficients.
+- **Beyond:** HR-zone-aware pace targeting (only if HR strap paired); multi-event chained plans (5K → 10K → half progression).
+
 ## What's in v1.6
 
 This release lands the long-promised plan generator: P15 PlanGenerator plus the C-COMPOSE-PLAN composition rule. The generator is template-adaptive, not pure-generative — every output plan traces to one of the hand-authored published templates (Cooper, Knapik, Pfitzinger). This is the design choice that distinguishes a defensible generator from a cargo-cult one: we don't reinvent periodization, we adapt published structures to user fitness and event timing.
