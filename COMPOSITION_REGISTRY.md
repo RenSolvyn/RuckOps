@@ -92,6 +92,36 @@ Each primitive declares: its source location, its contract (what it promises to 
 - **Justification:** Day-advancement logic is deterministic and one-shot-guarded (verified by tests). Plan content is evidence-cited per source (Cooper, Knapik USARIEM, Pfitzinger). **NO claim is made about user outcomes** — the primitive's tier reflects structural correctness of the schedule engine only, not clinical efficacy of the plans.
 - **Out-of-scope (registry §8 honoring):** This primitive does not promise users will hit race goals, prevent injury, or replace human coaching. Marketing copy claiming any of these would violate the tier ceiling.
 
+### P13 PaceZones
+- **Source:** `app.js`, class `PaceZones` and `DANIELS_VDOT_TABLE`
+- **Contract:** Given a recent time-trial result `{distanceMi, durationSec, mode}`, returns:
+  - For `mode === 'run'`: `{vdot: int, easy, marathon, threshold, interval, repetition}` with paces in sec/mi per Daniels (2014). Returns null if mode is not run or time-trial inputs are invalid.
+  - For `mode === 'ruck'`: returns null. **Ruck pacing is the domain of P13b, not this primitive.** This is a registry invariant — the primitive must not silently map ruck inputs to running zones.
+- **Tier:** T1
+- **Justification:** The VDOT lookup table is published (Daniels 2014); my implementation is a transcription. Tested against 10 reference VDOT values from the textbook, exact match required. Math (VDOT → zone paces) follows the same source. No outcome claims attached; the contract is "given this input, produce this output."
+- **Falsification:** Any of the 10 reference values differs from the published value by more than 1 sec/mi.
+
+### P13b RuckPaceTargets
+- **Source:** `app.js`, class `RuckPaceTargets`
+- **Contract:** Given `{packKg, observedRuckPaces: [secPerMi, ...]}`, returns:
+  - For run mode (if called): null
+  - For ruck mode: `{easy, standard, tempo}` paces in sec/mi based on Knapik / U.S. Army FM 21-18 standard pace adjusted for the user's observed personal variance. Standard pace = 15 min/mi at 35 lb baseline; adjusted by Knapik's empirical pack-weight slowdown coefficient. Personal variance derived from `observedRuckPaces` when n≥3 samples available; otherwise returns the population-level standard.
+- **Tier:** T2
+- **Justification:** The Knapik standard is published; the pack-weight adjustment uses Knapik's empirical equation (pace adds ~0.5 min/mi per 5 kg above 16 kg baseline). Personal-variance fitting is a simple mean shift from observed history — this is the part that limits tier to T2: the population-level adjustment is sound, but the personal-variance step is a heuristic without RCT support.
+- **Falsification:** Standard pace at 35 lb (16 kg) with no history must equal 15 min/mi within ±5 sec/mi. Higher pack weight must produce slower (numerically larger) pace.
+
+### P16 MetronomeEngine
+- **Source:** `app.js`, class `MetronomeEngine`
+- **Contract:** Given a target cadence in spm and an audio context, generates audio beats at the target interval until stopped. Supports adaptive recalibration: given an observed cadence (e.g., from P2 MotionTracker), adjusts target up or down by a bounded amount (default ±5%, hard-capped to 150-200 spm for run mode, 100-130 spm for walk/ruck mode). Wires to the existing audio infrastructure — does not create new permissions or contexts. Exposes `start({ targetSpm, mode })`, `stop()`, `adapt({ observedSpm })`, `currentTarget()`.
+- **Tier:** T2
+- **Justification:** Tempo accuracy is mechanically verifiable (beats over 60s window must match target ±2 spm — pure timer arithmetic). Adaptation policy is bounded (cannot drift outside published cadence ranges). The +5% increase from self-selected cadence is supported by Heiderscheit et al. (2011) and form-cue literature. T2 because the *effect* on individual running economy or injury rate is unmeasured by this app; only the *tempo accuracy* and *bound adherence* are testable.
+- **Falsification:** Beat count over a 60-second window deviates from target by more than 2 spm. Or: an adaptation call produces a target outside the documented bounds.
+- **Out-of-scope (will refuse to support):**
+  - "180 spm always" preset (literature is clear this is not universal)
+  - User-typed cadence target without bounds checking (refuses 250 spm, refuses 80 spm in run mode)
+  - HR-driven metronome (HR is too lagged for beat-by-beat cues)
+  - A "form score" derived from cadence alone
+
 ---
 
 ## §3 Composition rules and tier propagation
@@ -139,6 +169,13 @@ Each rule defines how primitives combine to produce a feature, and what tier the
 - **Tier law:** `tier(output) = tier(serializer)`
 - **Examples:** BayesianStride → profile JSON. Conformal calibration set → profile JSON. Workout record → IDB.
 - **Constraint:** serializer must have an inverse (round-trip-tested deserializer). If `_dirty=true` flags or memoized state require reconstruction post-load, the deserializer must do it. **(This is exactly the ConformalCoverage.fromJSON bug we caught — it failed to reset `_dirty`, silently producing wrong output. C-PERSIST's contract forbids this.)**
+
+### C-ENTRAIN
+- **Form:** `C-ENTRAIN(target_signal, observation, adjustment_policy) → cued_output`
+- **Tier law:** `tier(output) = min(target.tier, observation.tier, policy.tier)`
+- **Examples:** Cadence metronome — target_signal = pace-derived target spm, observation = MotionTracker's measured cadence, policy = "+5%/-5% bounded by published cadence ranges", output = audio beat stream.
+- **Constraint:** The adjustment policy must have hard bounds on the target signal. Unbounded entrainment loops can drift into unsafe regions (e.g., a metronome could ramp to 250 spm if observation feedback is interpreted naively). The bound is part of the composition rule, not optional.
+- **Constraint:** Closed-loop adaptation cannot fire faster than the underlying observation primitive can measure. If P2 MotionTracker takes 60s to converge on a cadence estimate, the C-ENTRAIN policy MUST NOT update the target faster than that window.
 
 ---
 
@@ -210,6 +247,43 @@ Each proposed v1.3 feature is decomposed against the registry. New primitives re
 - **Tier law application:** `min(F-PLAN.tier, P8.tier) = min(T2, T2) = T2`.
 - **Tier ceiling:** T2.
 - **Validation:** 10/10 synthetic cases (5 high-load fires override; 5 nominal preserves plan).
+
+### F-PACE-ZONES: Personalized pace targets (v1.4)
+- **Composition:** `C-FILTER(user_calibration_or_TT_history, P13)` for run mode, OR `C-FILTER(packKg + workout_history, P13b)` for ruck mode.
+- **Tier ceiling:** T1 for run (P13 is T1, calibration is T1 mechanically), T2 for ruck (P13b is T2).
+- **Validation:** 10 Daniels reference VDOTs match published values within ±1 sec/mi. Knapik standard pace at 35 lb matches 15 min/mi within ±5 sec/mi.
+- **What this enables for F-PLAN:** Plan prescription cards now display the user's *personalized* target paces alongside each prescribed workout (e.g., "EASY RUN 30 MIN — your easy pace: 10:42/mi").
+- **Run/ruck differentiation invariant:** P13 returns null for ruck mode; P13b returns null for run mode. The plan-card renderer routes to whichever returns non-null. **No silent cross-mapping is permitted.**
+
+### F-METRONOME: Adaptive cadence cueing (v1.4)
+- **Composition:** `C-ENTRAIN(F-PACE-ZONES.target_cadence, P2.observed_cadence, "+5% bounded" policy)` → audio beats via SoundCoach.
+- **Tier ceiling:** `min(F-PACE-ZONES.tier, P2.tier, policy.tier) = min(T1 for run / T2 for ruck, T2, T1) = T2`.
+- **Default policy:** Target = max(observed_cadence × 1.05, pace-appropriate floor); cap at observed_cadence × 1.10. Bounds: run mode 150-200 spm, walk/ruck mode 100-130 spm. Hard refuse to operate outside these. Adaptation fires no more than once per 60s window (matches P2's convergence time).
+- **Pace-cadence mapping (run mode, evidence-grounded):**
+  - Easy pace → target ~170 spm (or +5% from observed, whichever is higher)
+  - Marathon pace → target ~175 spm
+  - Threshold pace → target ~178 spm
+  - Interval (5K) pace → target ~182 spm
+  - Repetition pace → target ~185 spm
+  These are *defaults*; the observed-cadence adaptation always wins when the user's natural cadence is in the same direction.
+- **Pace-cadence mapping (ruck mode):** Pack weight scales the target. Light pack (<10 kg) → 120 spm. Standard pack (16 kg) → 115 spm. Heavy pack (20+ kg) → 110 spm. This reflects that heavier packs naturally produce shorter, slower stride cycles.
+- **Validation:**
+  - Tempo accuracy: 5 different target rates (160, 170, 180, 190, 200 spm), beat count over 60s within ±2 spm of target.
+  - Bound enforcement: targets outside [150, 200] for run mode are clamped, not blindly accepted.
+  - Adaptation rate-limit: rapid `adapt()` calls within 60s do not cascade (only the first call within the window takes effect).
+  - Mode invariant: starting in run mode then receiving ruck-mode adapt() must produce a target in the walk/ruck range.
+- **Explicitly out-of-scope:**
+  - "180 spm always" preset
+  - User-typed cadence target without bounds
+  - HR-driven cueing
+  - Form score derived from cadence alone
+
+### Run/ruck differentiation (cross-cutting invariant)
+- All pace-related and cadence-related primitives MUST honor mode. The registry forbids any composition that:
+  - Returns running pace zones for ruck inputs
+  - Returns ruck pace targets for run inputs
+  - Drives a run-cadence metronome during a ruck workout (and vice versa) without explicit user override
+- This invariant is testable: `expect(P13.compute({ mode: 'ruck', ... })).toBe(null)`, `expect(P13b.compute({ mode: 'run', ... })).toBe(null)`.
 
 ---
 

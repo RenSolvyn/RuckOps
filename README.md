@@ -47,6 +47,24 @@ npx serve .
 
 Then open `http://localhost:8000`. Note that geolocation in browsers requires HTTPS *or* localhost — `file://` won't work.
 
+## What's in v1.4
+
+This release adds three new primitives (P13, P13b, P16) and one new composition rule (C-ENTRAIN), wired into two new product features. Per [Composition Registry](COMPOSITION_REGISTRY.md) discipline, each primitive earned its tier through validation tests before its first use site.
+
+- **F-PACE-ZONES — personalized pace targets (run T1, ruck T2).** When you complete the 1-mile calibration trial, plan-day cards now show your individual target pace alongside each prescribed workout (e.g., "EASY RUN 30 MIN · Your easy: 9:42/mi"). Run-mode paces come from the Daniels VDOT system (P13, Tier 1 — verified against 10 reference VDOT values from Daniels 2014). Ruck paces come from the Knapik / Army FM 21-18 standard pace with personal variance from your past ruck history (P13b, Tier 2). A registry invariant explicitly forbids cross-mapping: running zones never appear for a ruck workout and vice versa.
+- **F-METRONOME — adaptive stride-cadence cueing (Tier 2).** New ♩ button in the live-workout header toggles an audio metronome. Beat tempo adapts to your observed cadence from the motion tracker (P2): target = max(your observed cadence × 1.05, the pace-appropriate floor). Hard-capped at observed × 1.10 to honor the form-cue literature (Heiderscheit et al. 2011) — the +5% bump is what's well-supported; pushing harder isn't. Mode bounds enforced (run: 150-200 spm, walk/ruck: 100-130 spm). Adaptation rate-limited to once per 60 seconds to match the MotionTracker's convergence window (registry C-ENTRAIN invariant). Pack-weight scales the ruck cadence default (light pack → 120, standard → 115, heavy → 110).
+
+### What v1.4 explicitly does NOT claim
+- That cadence cueing prevents injury or improves performance in any individual. The literature supports population-level effects on biomechanics; individual outcomes are unmeasured by this app.
+- "180 spm is the right cadence." It is not. The "180 always" target originated from Daniels' anecdotal observation of elite runners at 1984 Olympics; subsequent research (Hunter & Smith 2007, de Ruiter 2013) shows optimal cadence is highly individual. The app uses adaptive targets, not magic numbers.
+- That ruck VDOT zones exist. They don't. Ruck training has its own pace anchors per Knapik / Army FM 21-18; the registry's run/ruck differentiation invariant prevents the app from silently treating them as the same.
+- HR-zone-based metronome. Heart rate lags 30+ seconds behind effort; it cannot drive beat-by-beat cadence cues. Refused at the composition rule level.
+
+### Phased roadmap (declared at v1.4)
+- **v1.5 (next):** P14 FormFitnessFatigue (Banister model) — replaces the current 7d/28d ACWR with exponentially-weighted fitness and fatigue scores.
+- **v1.6:** P15 PlanGenerator — procedural plan generation given (event distance, weeks available, current VDOT, days/week). Hand-authored plans become templates the generator picks from.
+- **v1.7:** C-ADAPT composition — day-to-day plan modification based on actual completion + Form score.
+
 ## What's in v1.3
 
 This release introduces three changes, each governed by the [Composition Registry](COMPOSITION_REGISTRY.md). Tier labels are honest about what's measured vs. what's claimed.

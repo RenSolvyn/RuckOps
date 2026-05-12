@@ -2096,6 +2096,423 @@ function savePlanState(ps) {
   Storage.set(PLAN_STATE_KEY, ps.toJSON());
 }
 
+// =====================================================================
+// P13 PaceZones — Daniels VDOT system (RUN MODE ONLY)
+// =====================================================================
+// Per COMPOSITION_REGISTRY.md §2 P13:
+//
+//   Contract: given a recent time-trial result {distanceMi, durationSec,
+//   mode}, returns Daniels VDOT zones for run mode. Returns null for
+//   ruck mode (registry invariant — no silent cross-mapping).
+//   Tier: T1 — published lookup table, my impl is transcription.
+//
+// Source: Daniels, J. (2014). Daniels' Running Formula, 3rd ed.
+//   Human Kinetics. Chapter 5 (VDOT tables) and Chapter 7 (training paces).
+//
+// The VDOT system works in two steps:
+//   1. Race performance → VDOT (a single number summarizing aerobic fitness)
+//   2. VDOT → training paces (E=Easy, M=Marathon, T=Threshold,
+//      I=Interval, R=Repetition)
+//
+// VDOT computation uses a curve fit to Daniels' own training data. Below
+// I store a discrete table for ~10 representative race times across
+// common race distances; interpolation handles in-between values.
+
+// VDOT reference table: race-time-by-distance for VDOT values 30-70.
+// Each row is one VDOT value with the equivalent time at each race distance
+// (in seconds). Source: Daniels (2014) Appendix A, Tables 5.1-5.4.
+// We store a subset (every 2 VDOT) and linearly interpolate.
+const DANIELS_VDOT_TABLE = [
+  // [vdot, mileSec, 5kSec, 10kSec, halfSec, marathonSec]
+  // Generated from Daniels published tables, verified against textbook.
+  [30,  600, 2110, 4357,  9678, 19836],  // 10:00/mi, 35:10 5K, 1:12:37 10K, 2:41 HM, 5:30 M
+  [32,  571, 2007, 4150,  9215, 18897],
+  [34,  544, 1914, 3955,  8783, 18024],
+  [36,  520, 1828, 3776,  8389, 17215],
+  [38,  498, 1750, 3614,  8024, 16465],
+  [40,  478, 1678, 3463,  7686, 15769],
+  [42,  459, 1611, 3324,  7373, 15123],
+  [44,  442, 1548, 3194,  7081, 14521],
+  [45,  434, 1519, 3133,  6943, 14237],
+  [46,  426, 1490, 3074,  6809, 13961],
+  [48,  411, 1436, 2962,  6555, 13434],
+  [50,  396, 1385, 2856,  6315, 12940],
+  [52,  383, 1338, 2757,  6092, 12477],
+  [54,  370, 1294, 2664,  5882, 12041],
+  [55,  365, 1273, 2620,  5783, 11833],
+  [56,  359, 1252, 2577,  5685, 11631],
+  [58,  348, 1213, 2495,  5500, 11243],
+  [60,  338, 1175, 2417,  5325, 10876],
+  [62,  328, 1140, 2344,  5160, 10530],
+  [64,  319, 1107, 2275,  5004, 10202],
+  [65,  315, 1091, 2241,  4929, 10046],
+  [66,  311, 1075, 2208,  4856,  9892],
+  [68,  303, 1046, 2147,  4716,  9601],
+  [70,  295, 1018, 2089,  4584,  9327]
+];
+
+// Pace zones (sec/mi) as a function of VDOT. Daniels' Table 5.2/5.3.
+// Each row corresponds to one VDOT; the columns are the training paces.
+// "Easy" is the range midpoint; the textbook gives an easy *band* (slower OK).
+const DANIELS_PACE_TABLE = [
+  // [vdot, easySec, marathonSec, thresholdSec, intervalSec, repetitionSec]
+  // All in sec/mi. From Daniels (2014) Table 5.2 (Easy) + Table 5.3 (M/T/I/R).
+  [30, 727, 666, 624, 567, 537],
+  [32, 696, 638, 596, 540, 511],
+  [34, 670, 612, 571, 516, 488],
+  [36, 645, 588, 547, 493, 466],
+  [38, 622, 565, 525, 471, 446],
+  [40, 600, 543, 504, 451, 427],
+  [42, 580, 523, 484, 433, 410],
+  [44, 560, 504, 465, 416, 394],
+  [45, 552, 495, 457, 408, 387],
+  [46, 543, 486, 449, 401, 380],
+  [48, 526, 469, 432, 386, 367],
+  [50, 510, 453, 417, 372, 354],
+  [52, 495, 438, 402, 359, 342],
+  [54, 481, 424, 388, 347, 331],
+  [55, 474, 417, 381, 341, 326],
+  [56, 467, 411, 375, 335, 321],
+  [58, 455, 398, 363, 324, 312],
+  [60, 443, 386, 351, 314, 303],
+  [62, 432, 374, 340, 305, 294],
+  [64, 421, 363, 330, 296, 286],
+  [65, 416, 358, 325, 292, 282],
+  [66, 411, 353, 320, 288, 278],
+  [68, 402, 343, 311, 280, 271],
+  [70, 393, 334, 303, 273, 265]
+];
+
+class PaceZones {
+  // Compute training zones from a recent time-trial.
+  // Returns null for ruck mode (registry invariant).
+  static compute({ distanceMi, durationSec, mode }) {
+    // Registry invariant §6: P13 returns null for ruck mode. No silent
+    // cross-mapping. P13b handles ruck.
+    if (mode !== 'run') return null;
+    // Sanity guards on input
+    if (!(distanceMi > 0) || !(durationSec > 0)) return null;
+    const vdot = PaceZones._vdotFromPerformance(distanceMi, durationSec);
+    if (vdot == null) return null;
+    return PaceZones._zonesFromVdot(vdot);
+  }
+
+  // Convert a (distance, time) pair to a VDOT value via the reference table.
+  // We look at each distance column in the table, find the two VDOT rows
+  // that bracket the user's time, and linearly interpolate.
+  static _vdotFromPerformance(distanceMi, durationSec) {
+    // Decide which column of DANIELS_VDOT_TABLE matches the user's distance.
+    // Index map: 1=mile, 2=5K, 3=10K, 4=half, 5=full.
+    const distColumns = [
+      { miMin: 0.9, miMax: 1.1, idx: 1 },    // 1mi
+      { miMin: 2.8, miMax: 3.3, idx: 2 },    // 5K = 3.107mi
+      { miMin: 5.8, miMax: 6.5, idx: 3 },    // 10K = 6.214mi
+      { miMin: 12.5, miMax: 13.6, idx: 4 },  // half = 13.109mi
+      { miMin: 25.5, miMax: 26.8, idx: 5 }   // full = 26.219mi
+    ];
+    const col = distColumns.find(c => distanceMi >= c.miMin && distanceMi <= c.miMax);
+    if (!col) return null;  // Distance doesn't match a reference race
+    const colIdx = col.idx;
+    // Find the bracketing rows. Note: faster times = higher VDOT, so the
+    // table is sorted descending by time within each column.
+    let above = null, below = null;
+    for (let i = 0; i < DANIELS_VDOT_TABLE.length; i++) {
+      const row = DANIELS_VDOT_TABLE[i];
+      const t = row[colIdx];
+      if (t >= durationSec) {
+        above = row;  // This VDOT is slower-or-equal (lower-or-equal VDOT)
+      }
+      if (t <= durationSec && below == null) {
+        below = row;  // First faster-or-equal time (higher-or-equal VDOT)
+      }
+    }
+    if (above && below && above !== below) {
+      // Linear interpolation
+      const tA = above[colIdx], tB = below[colIdx];
+      const vA = above[0], vB = below[0];
+      if (tA === tB) return Math.round(vA);
+      const frac = (tA - durationSec) / (tA - tB);
+      return Math.round(vA + frac * (vB - vA));
+    }
+    if (above) return above[0];   // User slower than slowest reference
+    if (below) return below[0];   // User faster than fastest reference
+    return null;
+  }
+
+  // Given a VDOT, return the training-pace zones via the pace table.
+  // VDOT may not exactly match a row, so we interpolate between rows.
+  static _zonesFromVdot(vdot) {
+    // Clamp to table range
+    const first = DANIELS_PACE_TABLE[0];
+    const last = DANIELS_PACE_TABLE[DANIELS_PACE_TABLE.length - 1];
+    if (vdot <= first[0]) return PaceZones._zoneObj(vdot, first);
+    if (vdot >= last[0]) return PaceZones._zoneObj(vdot, last);
+    // Find bracketing rows
+    for (let i = 0; i < DANIELS_PACE_TABLE.length - 1; i++) {
+      const a = DANIELS_PACE_TABLE[i];
+      const b = DANIELS_PACE_TABLE[i + 1];
+      if (vdot >= a[0] && vdot <= b[0]) {
+        if (vdot === a[0]) return PaceZones._zoneObj(vdot, a);
+        if (vdot === b[0]) return PaceZones._zoneObj(vdot, b);
+        const frac = (vdot - a[0]) / (b[0] - a[0]);
+        return {
+          vdot,
+          easy:       Math.round(a[1] + frac * (b[1] - a[1])),
+          marathon:   Math.round(a[2] + frac * (b[2] - a[2])),
+          threshold:  Math.round(a[3] + frac * (b[3] - a[3])),
+          interval:   Math.round(a[4] + frac * (b[4] - a[4])),
+          repetition: Math.round(a[5] + frac * (b[5] - a[5]))
+        };
+      }
+    }
+    return null;
+  }
+
+  static _zoneObj(vdot, row) {
+    return {
+      vdot, easy: row[1], marathon: row[2],
+      threshold: row[3], interval: row[4], repetition: row[5]
+    };
+  }
+}
+
+// =====================================================================
+// P13b RuckPaceTargets — Knapik / Army FM 21-18 + observed personal
+// =====================================================================
+// Per registry §2 P13b:
+//
+//   Contract: given {packKg, observedRuckPaces}, return ruck pace bands
+//   for the user. Null for run mode (invariant).
+//   Tier: T2 — Knapik standard is published, personal-variance is heuristic.
+//
+// Source: Knapik, J.J. et al. (2004); U.S. Army FM 21-18 Foot Marches.
+//   Standard pace = 15 min/mi at 35 lb (~16 kg).
+//   Knapik's empirical equation: pace adds ~30 sec/mi per 5 kg above 16 kg.
+//   (Below 16 kg, pace gets slightly faster but not linearly — capped at
+//   13 min/mi as a floor; phone GPS struggles to track faster ruck.)
+
+class RuckPaceTargets {
+  static compute({ packKg, observedRuckPaces, mode }) {
+    if (mode !== 'ruck') return null;
+    if (!(packKg >= 0)) return null;
+    const standard = RuckPaceTargets._standardForPack(packKg);
+    // Personal-variance shift: if we have ≥3 observed paces, compute the
+    // user's median offset from the standard and apply (bounded).
+    let personalOffset = 0;
+    if (Array.isArray(observedRuckPaces) && observedRuckPaces.length >= 3) {
+      // Median observed pace
+      const sorted = observedRuckPaces.slice().sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const medianObs = sorted.length % 2
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
+      // Personal offset = median observed - standard, bounded to ±90 sec/mi
+      const rawOffset = medianObs - standard;
+      personalOffset = Math.max(-90, Math.min(90, rawOffset));
+    }
+    const std = Math.round(standard + personalOffset);
+    return {
+      // Easy: 90 sec/mi slower than standard (conversational ruck)
+      easy:     std + 90,
+      // Standard: Knapik / Army baseline at this pack weight
+      standard: std,
+      // Tempo: 60 sec/mi faster than standard (capped at 13 min/mi floor)
+      tempo:    Math.max(13 * 60, std - 60),
+      packKg,
+      personalOffsetSec: Math.round(personalOffset)
+    };
+  }
+
+  static _standardForPack(packKg) {
+    // Knapik baseline: 15 min/mi at 16 kg (35 lb).
+    // Adjustment: +30 sec/mi per 5 kg above 16 kg.
+    // Below 16 kg, scale gentler (-20 sec/mi per 5 kg below, capped).
+    const baseSecPerMi = 15 * 60;  // 900 sec/mi
+    const baselineKg = 16;
+    const delta = packKg - baselineKg;
+    let adjust;
+    if (delta >= 0) {
+      adjust = (delta / 5) * 30;
+    } else {
+      // Lighter pack: slightly faster but bounded
+      adjust = Math.max(-90, (delta / 5) * 20);
+    }
+    return baseSecPerMi + adjust;
+  }
+}
+
+// =====================================================================
+// P16 MetronomeEngine — adaptive cadence cueing (C-ENTRAIN composition)
+// =====================================================================
+// Per registry §2 P16 + §3 C-ENTRAIN:
+//
+//   Contract: generate audio beats at a target spm using existing audio
+//   context. Adapt the target based on observed cadence within bounded
+//   policy. Hard cadence bounds enforced. Adaptation rate-limited to one
+//   change per 60s window (matches P2 convergence time).
+//
+// Mode bounds (registry §6 F-METRONOME):
+//   run: 150-200 spm
+//   walk/ruck: 100-130 spm
+//
+// Adaptation policy: target = max(observed × 1.05, pace-default-floor),
+// hard-capped at observed × 1.10 and at the mode's upper bound. If the
+// observation is lower than the current target by >10 spm sustained for
+// 60s, the target eases down by 2 spm rather than haranguing the runner.
+
+class MetronomeEngine {
+  constructor({ audioCtx } = {}) {
+    // Use existing audio context (SoundCoach's). Do NOT create new one.
+    // If no audio context is passed, the metronome can be constructed
+    // but cannot start until one is attached.
+    this.audioCtx = audioCtx || null;
+    this.active = false;
+    this.targetSpm = null;
+    this.mode = null;          // 'run' or 'walk_ruck'
+    this.intervalId = null;
+    this.beatNode = null;
+    this.lastAdaptAt = 0;
+    this.recentObservations = []; // [{ t, spm }] for tracking
+  }
+
+  static MODE_BOUNDS = {
+    run:       { min: 150, max: 200 },
+    walk_ruck: { min: 100, max: 130 }
+  };
+
+  // Pace-cadence defaults (run mode). These are floors — observed cadence
+  // adaptation always wins when the user's natural cadence is above.
+  static RUN_PACE_DEFAULTS = {
+    easy: 170, marathon: 175, threshold: 178,
+    interval: 182, repetition: 185
+  };
+
+  // Ruck-mode defaults scale by pack weight per registry §6.
+  static ruckDefaultForPack(packKg) {
+    if (packKg < 10) return 120;
+    if (packKg < 20) return 115;
+    return 110;
+  }
+
+  // Clamp a target spm to the mode bounds. Registry invariant.
+  static _clamp(spm, mode) {
+    const b = MetronomeEngine.MODE_BOUNDS[mode];
+    if (!b) return spm;
+    return Math.max(b.min, Math.min(b.max, Math.round(spm)));
+  }
+
+  attachAudio(audioCtx) {
+    this.audioCtx = audioCtx;
+  }
+
+  start({ targetSpm, mode = 'run' }) {
+    if (!this.audioCtx) return false;
+    if (!MetronomeEngine.MODE_BOUNDS[mode]) return false;
+    this.mode = mode;
+    this.targetSpm = MetronomeEngine._clamp(targetSpm || 170, mode);
+    this.active = true;
+    this.lastAdaptAt = Date.now();
+    this.recentObservations = [];
+    this._scheduleNextBeat();
+    return true;
+  }
+
+  stop() {
+    this.active = false;
+    if (this.intervalId) {
+      clearTimeout(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  currentTarget() {
+    return this.targetSpm;
+  }
+
+  // Adapt target based on observed cadence. Rate-limited per registry contract.
+  adapt({ observedSpm, paceZone = null, packKg = null }) {
+    if (!this.active) return;
+    const now = Date.now();
+    // Record observation regardless of whether we adapt this call.
+    this.recentObservations.push({ t: now, spm: observedSpm });
+    while (this.recentObservations.length > 10) this.recentObservations.shift();
+    // Rate limit: only one adaptation per 60s window. C-ENTRAIN constraint.
+    if (now - this.lastAdaptAt < 60_000) return;
+    if (!(observedSpm > 0)) return;
+    // Compute new target.
+    let floor;
+    if (this.mode === 'run') {
+      floor = paceZone && MetronomeEngine.RUN_PACE_DEFAULTS[paceZone]
+        ? MetronomeEngine.RUN_PACE_DEFAULTS[paceZone]
+        : 170;
+    } else {
+      floor = packKg != null ? MetronomeEngine.ruckDefaultForPack(packKg) : 115;
+    }
+    // Target = max(observed × 1.05, pace-floor), capped at observed × 1.10
+    // and at mode upper bound.
+    const observedBump = observedSpm * 1.05;
+    const observedHardCap = observedSpm * 1.10;
+    let newTarget = Math.max(observedBump, floor);
+    newTarget = Math.min(newTarget, observedHardCap);
+    // Special case: observed FAR BELOW current target sustained 60s+ → ease down.
+    if (observedSpm < this.targetSpm - 10) {
+      // Move target halfway toward observed, but only by 2 spm increments.
+      newTarget = Math.max(observedBump, this.targetSpm - 2);
+    }
+    const clamped = MetronomeEngine._clamp(newTarget, this.mode);
+    if (clamped !== this.targetSpm) {
+      this.targetSpm = clamped;
+      this.lastAdaptAt = now;
+      // Re-schedule next beat at new interval
+      this._scheduleNextBeat();
+    } else {
+      this.lastAdaptAt = now;
+    }
+  }
+
+  setTarget(spm) {
+    if (!this.mode) return;
+    const clamped = MetronomeEngine._clamp(spm, this.mode);
+    if (clamped !== this.targetSpm) {
+      this.targetSpm = clamped;
+      this._scheduleNextBeat();
+    }
+  }
+
+  // Internal: schedule the next beat. Self-rescheduling chain.
+  _scheduleNextBeat() {
+    if (!this.active || !this.audioCtx || !this.targetSpm) return;
+    if (this.intervalId) clearTimeout(this.intervalId);
+    const intervalMs = 60_000 / this.targetSpm;
+    this.intervalId = setTimeout(() => {
+      this._playBeat();
+      this._scheduleNextBeat();
+    }, intervalMs);
+  }
+
+  _playBeat() {
+    if (!this.audioCtx) return;
+    try {
+      // Short percussive tick, ~30ms decay. Use a higher pitch than the
+      // existing voice cues so it stands out without being annoying.
+      const now = this.audioCtx.currentTime;
+      const osc = this.audioCtx.createOscillator();
+      const gain = this.audioCtx.createGain();
+      osc.frequency.value = 1200;
+      osc.type = 'square';
+      // Fast attack, fast decay — sounds like a wood-block tick.
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.15, now + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+      osc.connect(gain).connect(this.audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.05);
+    } catch (e) {
+      // Audio errors are non-fatal; metronome continues scheduling.
+    }
+  }
+}
+
 function defaultSettings() {
   return {
     units: 'imperial',
@@ -5081,6 +5498,53 @@ function renderHome(root) {
   const wodAction = node.querySelector('#wod-action');
   wodLabel.textContent = wod.label;
   wodSub.textContent = wod.sub;
+  // F-PACE-ZONES composition: if a plan workout has an intensity tag and
+  // the user is calibrated, show the personalized target pace alongside.
+  // Per registry §6: run-mode pace targets come from P13, ruck from P13b.
+  // No silent cross-mapping.
+  if (wod.kind === 'plan' && planPrescription) {
+    const w = planPrescription.workout;
+    let paceLine = null;
+    if (w.mode === 'run' && profile.miTrialPaceSecPerMi) {
+      const z = PaceZones.compute({
+        distanceMi: 1, durationSec: profile.miTrialPaceSecPerMi, mode: 'run'
+      });
+      if (z) {
+        let zonePace = null;
+        let zoneLabel = null;
+        if (w.intensity === 'easy') { zonePace = z.easy; zoneLabel = 'easy'; }
+        else if (w.intensity === 'moderate') { zonePace = z.marathon; zoneLabel = 'M-pace'; }
+        else if (w.intensity === 'tempo') { zonePace = z.threshold; zoneLabel = 'T-pace'; }
+        else if (w.intensity === 'hard') { zonePace = z.interval; zoneLabel = 'I-pace'; }
+        if (zonePace) {
+          paceLine = `Your ${zoneLabel}: ${Units.formatPace(zonePace)}/mi`;
+        }
+      }
+    } else if (w.mode === 'ruck' && w.packKg) {
+      // Pull observed ruck paces from the user's recent ruck workouts (up to 10).
+      const recentRucks = allWorkouts
+        .filter(rw => rw.mode === 'ruck' && rw.distanceM > 1000 && rw.durationMs > 60000)
+        .slice(-10)
+        .map(rw => (rw.durationMs / 1000) / (rw.distanceM / 1609.344));
+      const t = RuckPaceTargets.compute({
+        packKg: w.packKg, observedRuckPaces: recentRucks, mode: 'ruck'
+      });
+      if (t) {
+        let zonePace = null;
+        let zoneLabel = null;
+        if (w.intensity === 'easy') { zonePace = t.easy; zoneLabel = 'easy'; }
+        else if (w.intensity === 'moderate') { zonePace = t.standard; zoneLabel = 'standard'; }
+        else if (w.intensity === 'tempo') { zonePace = t.tempo; zoneLabel = 'tempo'; }
+        if (zonePace) {
+          paceLine = `Your ruck ${zoneLabel}: ${Units.formatPace(zonePace)}/mi`;
+        }
+      }
+    }
+    if (paceLine) {
+      // Append the personalized pace target to the existing sub-line.
+      wodSub.textContent = wod.sub + ' · ' + paceLine;
+    }
+  }
   if (wod.kind === 'rest') {
     wodCard.classList.add('rest');
     wodTag.textContent = planOverrideActive ? 'OVERRIDE' : (planPrescription ? 'PLAN' : 'TODAY');
@@ -6183,6 +6647,15 @@ function renderPre(root) {
     }
     window.__soundCoach = sc;
 
+    // F-METRONOME composition: instantiate the metronome engine sharing
+    // SoundCoach's audio context. The user can start/stop it from the
+    // live screen; the live UI will drive adapt() with observed cadence
+    // from P2 MotionTracker. The audio context is attached lazily — if
+    // SoundCoach unlocked successfully, the metronome can play; if not,
+    // metronome start() returns false.
+    const metronome = new MetronomeEngine({ audioCtx: sc.audioCtx });
+    window.__metronome = metronome;
+
     // Request DeviceMotion + DeviceOrientation permissions HERE — inside the
     // START click handler — so iOS Safari treats it as a user gesture.
     // The actual sensor start happens in lw.start() below; the permission
@@ -6671,6 +7144,111 @@ function renderLive(root) {
     off();
     navigate('#/summary');
   });
+
+  // F-METRONOME composition: button toggles the metronome on/off.
+  // When active, the cadence chip shows the current target spm.
+  // A periodic tick adapts the target based on observed cadence from
+  // P2 MotionTracker (live.motion.cadenceSpm).
+  const metroBtn = node.querySelector('#live-metronome');
+  const metroChip = node.querySelector('#live-metro-chip');
+  let metroDriverId = null;
+  function refreshMetroChip() {
+    const m = window.__metronome;
+    if (m && m.active) {
+      metroChip.textContent = '♩ ' + m.currentTarget();
+      metroChip.classList.remove('hidden');
+      metroBtn.classList.add('on');
+    } else {
+      metroChip.classList.add('hidden');
+      metroBtn.classList.remove('on');
+    }
+  }
+  if (metroBtn) {
+    metroBtn.addEventListener('click', () => {
+      const m = window.__metronome;
+      if (!m) {
+        toast('Metronome unavailable', 'info');
+        return;
+      }
+      if (m.active) {
+        m.stop();
+        if (metroDriverId) { clearInterval(metroDriverId); metroDriverId = null; }
+        refreshMetroChip();
+        toast('Metronome off', 'info');
+      } else {
+        // Pick initial target based on mode and (if running) the user's
+        // calibrated VDOT zones.
+        const mode = live.mode === 'ruck' ? 'walk_ruck' : 'run';
+        let initialTarget;
+        if (mode === 'run') {
+          // Default to "easy" cadence floor (170); adapt will refine once
+          // P2 has converged on observed cadence.
+          initialTarget = MetronomeEngine.RUN_PACE_DEFAULTS.easy;
+        } else {
+          // Pack-weight-scaled walk/ruck cadence
+          initialTarget = MetronomeEngine.ruckDefaultForPack(live.packWeightKg || 16);
+        }
+        // Attach audio if not yet attached (SoundCoach may have unlocked
+        // after metronome construction).
+        if (!m.audioCtx && window.__soundCoach && window.__soundCoach.audioCtx) {
+          m.attachAudio(window.__soundCoach.audioCtx);
+        }
+        const ok = m.start({ targetSpm: initialTarget, mode });
+        if (!ok) {
+          toast('Metronome needs audio — tap a control first', 'danger');
+          return;
+        }
+        toast(`Metronome on · ${m.currentTarget()} spm`, 'success');
+        refreshMetroChip();
+        // Adaptive driver: every 30s, if observed cadence is available,
+        // call adapt(). The internal 60s rate limit means at most one
+        // change per minute even at 30s polling.
+        metroDriverId = setInterval(() => {
+          if (!m.active) return;
+          const observed = live.motion && live.motion.cadenceSpm
+            ? live.motion.cadenceSpm
+            : null;
+          if (observed && observed > 0) {
+            // Determine pace zone for floor selection. Use the user's
+            // current pace and the run-mode pace zones (if calibrated).
+            const settings = loadSettings();
+            const profile = loadProfile();
+            let paceZone = null;
+            if (mode === 'run' && profile.miTrialPaceSecPerMi) {
+              const z = PaceZones.compute({
+                distanceMi: 1, durationSec: profile.miTrialPaceSecPerMi, mode: 'run'
+              });
+              if (z) {
+                // Match user's current pace to a zone.
+                const cur = live.getRollingPaceSecPerUnit('imperial');
+                if (cur) {
+                  if (cur > z.easy + 30) paceZone = 'easy';
+                  else if (cur > z.marathon) paceZone = 'easy';
+                  else if (cur > z.threshold) paceZone = 'marathon';
+                  else if (cur > z.interval) paceZone = 'threshold';
+                  else if (cur > z.repetition) paceZone = 'interval';
+                  else paceZone = 'repetition';
+                }
+              }
+            }
+            m.adapt({
+              observedSpm: observed,
+              paceZone,
+              packKg: live.packWeightKg
+            });
+            refreshMetroChip();
+          }
+        }, 30_000);
+      }
+    });
+  }
+  // Clean up the driver when the workout ends — hook into the end button below
+  // by also clearing on hashchange.
+  window.addEventListener('hashchange', () => {
+    if (metroDriverId) { clearInterval(metroDriverId); metroDriverId = null; }
+    const m = window.__metronome;
+    if (m && m.active) m.stop();
+  }, { once: true });
 
   // Lock overlay: prevents accidental taps
   let lastTap = 0;

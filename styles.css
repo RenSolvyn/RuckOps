@@ -2378,3 +2378,19 @@ select {
   color: var(--olive, #4a5d23);
   margin-bottom: 6px;
 }
+
+/* ----- F-METRONOME: live header chip + button state ----- */
+.hr-chip.metronome {
+  background: rgba(244, 129, 31, 0.18);
+  color: var(--amber, #c9a45c);
+  border: 1px solid rgba(244, 129, 31, 0.4);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+}
+.icon-btn.on {
+  background: var(--amber, #c9a45c);
+  color: #0D0F0D;
+}
+.icon-btn.on:active {
+  background: #d4b06a;
+}
