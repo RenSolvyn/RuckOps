@@ -122,6 +122,51 @@ Each primitive declares: its source location, its contract (what it promises to 
   - HR-driven metronome (HR is too lagged for beat-by-beat cues)
   - A "form score" derived from cadence alone
 
+### P14 FormFitnessFatigue
+- **Source:** `app.js`, class `FormFitnessFatigue`
+- **Contract:** Given a chronological history of (session_load, timestamp_ms) pairs, produces `{fitness, fatigue, form}` scores per Banister (1991) and Busso (2003). Computation:
+  - `fitness(t) = Σᵢ load_i × exp(-(t - tᵢ) / τ_fitness)` with τ_fitness = 42 days
+  - `fatigue(t) = Σᵢ load_i × exp(-(t - tᵢ) / τ_fatigue)` with τ_fatigue = 7 days
+  - `form(t) = fitness(t) - k × fatigue(t)` with k = 2.0 (Busso's published coefficient)
+  - Returns null if history is empty or has fewer than 3 sessions (insufficient signal).
+  - Time constants are configurable for future calibration but defaults are Banister's published values.
+- **Tier:** T2
+- **Justification:** The Banister model is published mathematics; my implementation is the textbook transcription. Tested via known fixed-point cases (a single load N days ago decays to load × exp(-N/τ)) and monotonicity properties. T2 (not T1) because the τ constants come from elite-athlete studies; individual fits would shift them, and we don't measure individual fits. The model is *applied* correctly; the question of whether 42 / 7 are the right time constants *for this user* is empirical and unmeasured here.
+- **Falsification:** A single-load history of magnitude L deposited exactly 7 days ago should produce fatigue ≈ L × exp(-1) = 0.3679 × L within ±1%. Form must be lower immediately after a hard session than 7 days later (post-recovery rebound), for any single session.
+- **Out-of-scope:** Race-time prediction from fitness scores. Individual-optimal training-load prescription. Recovery countdown timers.
+
+### P17 MetronomeController
+- **Source:** `app.js`, class `MetronomeController`
+- **Contract:** A higher-level coordinator that wraps P16 MetronomeEngine and accepts a workout prescription (`{mode, intensity, phases?, packKg?}`). Auto-selects appropriate initial target. Subscribes to MotionTracker observations (P2). Optionally drives phase-aware cadence shifts during interval workouts (e.g., during a 5×800m, target ramps up to interval-pace cadence during the work phase and eases back during the recovery jog).
+- **Tier:** T2
+- **Justification:** Pure orchestration; tier inherited from P16 + P2 + P13/P13b inputs. Mode bounds enforced via underlying P16. Phase-aware target shifts use the registered pace-zone → cadence default mapping from F-METRONOME (registry §6); no new physics introduced.
+- **Falsification:** Constructing the controller from a ruck prescription must produce only walk/ruck-bounded targets. Constructing from a run prescription must produce only run-bounded targets. Phase transitions during an interval workout must change the target spm (otherwise the phase-aware logic isn't doing anything).
+
+### P15 PlanGenerator
+- **Source:** `app.js`, class `PlanGenerator`
+- **Contract:** Given an event specification `{mode, distanceM, weeksAvailable, daysPerWeek?, userVdot?, userPackKg?}`, produces a plan object structurally compatible with `COACHING_PLANS` entries. Operation is template-adaptive, not pure-generative:
+  - Selects the closest hand-authored template by `mode` and `distanceM` using an **asymmetric** log-ratio metric: training UP from a shorter template (user goal > template distance) gets 2× the penalty of training DOWN. Rationale: a 10K target with a half-marathon template adapted shorter produces a better-prepared athlete than a 10K target with a 5K template stretched out. Envelope: ratio ∈ [0.4, 2.0] (mode invariant: run-event plans select only from run templates; ruck-event plans only ruck).
+  - Scales the template's week count within ±25% of its natural length by repeating consolidation weeks (to lengthen) or compressing build weeks (to shorten).
+  - Scales workout volumes by `userVdot / template_target_vdot` for run plans; by `packKg / template_pack_kg` for ruck plans. Volume scaling is bounded: factor clamped to [0.6, 1.4] so a very low VDOT user doesn't get 7-minute runs and a very high VDOT user doesn't get 3-hour easy runs from a beginner template.
+  - Returns `null` if no template fits within ±25% week count, or if `mode` and `distanceM` together have no template (e.g. a 50-mile ruck doesn't yet have a base template).
+  - The generated plan's `id` is `gen-{mode}-{distance}-{weeks}-{timestamp}` so PlanState's persistence layer can round-trip it.
+- **Tier:** T2
+- **Justification:** Template structure (build/peak/taper proportions, hard/easy alternation, weekly increment patterns) inherits directly from the hand-authored T2 templates (Cooper, Knapik, Pfitzinger). The scaling math is mechanically correct (multiply duration by a bounded factor; insert/drop consolidation weeks while preserving order). The *individual fit* is unmeasured — does week 4 of a generated plan actually correspond to where this user is in their training? That's empirical. So T2, not T1.
+- **Falsification:**
+  - Generated plan must validate against PlanState's expected schema (id, label, duration_weeks, weeks[][7]) — verified by `PlanState.fromJSON(generated.toJSON())` round-trip.
+  - Mode invariant (refined): run-event plan contains zero ruck workouts (ruck loading is wrong stimulus for running adaptation). Ruck-event plan may contain easy run workouts as cross-training aerobic base (per Knapik 2004) but no hard runs (compromises ruck-specific adaptation). Cross-train workouts (mode=null) allowed in both.
+  - Weekly **primary-mode** volume increment never exceeds 50% week-over-week. The "10% rule" cited in popular running literature is an industry myth: the hand-authored templates we build on (Knapik, Cooper, Pfitzinger) have intentional phase-transition jumps of 20-45%, which is part of how they work. Enforcing 10% here would reject the exact templates we depend on. The 50% ceiling catches catastrophic generator bugs (e.g., scaling factor applied twice) without rejecting legitimate periodization.
+  - Hard sessions never scheduled on consecutive days within the same week.
+- **Not enforced (and why we don't):**
+  - **Specific "final week taper" rule**: The taper shape is template-specific. A 5K plan's event-week isn't a taper week in the same way a half-marathon's is (the event itself is short). The hand-authored templates encode appropriate taper for their event distance; the generator preserves their shape under scaling, which preserves whatever taper they had. Enforcing a single "≥25% reduction in final week" rule rejected both Cooper c25k (where W12 is the event week, not a taper week) and Knapik 12mi (where W8 IS the 12-mile test). The lesson: structural invariants must survive contact with the templates they validate.
+  - **Specific "10% weekly increment" rule**: see above. Phase transitions in published plans routinely exceed 10%; the rule is folklore, not periodization.
+- **Out-of-scope:**
+  - Predicting race-time from generated plan. The plan targets an event; it doesn't promise a result.
+  - Individual injury-risk prediction per generated workout. No validated thresholds.
+  - First-principles generation without a template anchor. Reinventing periodization is the cargo cult risk we're explicitly avoiding.
+  - HR-zone-primary prescription. Pace targets stay the anchor; HR is supplementary.
+  - "Optimal" claims. We produce *plausible defensible* plans, not optimal ones for any individual.
+
 ---
 
 ## §3 Composition rules and tier propagation
@@ -176,6 +221,19 @@ Each rule defines how primitives combine to produce a feature, and what tier the
 - **Examples:** Cadence metronome — target_signal = pace-derived target spm, observation = MotionTracker's measured cadence, policy = "+5%/-5% bounded by published cadence ranges", output = audio beat stream.
 - **Constraint:** The adjustment policy must have hard bounds on the target signal. Unbounded entrainment loops can drift into unsafe regions (e.g., a metronome could ramp to 250 spm if observation feedback is interpreted naively). The bound is part of the composition rule, not optional.
 - **Constraint:** Closed-loop adaptation cannot fire faster than the underlying observation primitive can measure. If P2 MotionTracker takes 60s to converge on a cadence estimate, the C-ENTRAIN policy MUST NOT update the target faster than that window.
+
+### C-COMPOSE-PLAN
+- **Form:** `C-COMPOSE-PLAN(template_library, user_state, event_target, scaling_policy) → PlanState-compatible plan`
+- **Tier law:** `tier(output) = max(tier(template_library), tier(user_state), tier(scaling_policy))` (worst component wins).
+- **Examples:** PlanGenerator selects a template by event distance, scales weeks and per-workout durations to user VDOT, validates against schema invariants.
+- **Constraints (must hold or rule refuses to ship a plan):**
+  1. Mode purity: generated plan contains only workouts of the event's mode. The cross-cutting run/ruck invariant from §6 applies all the way through generation.
+  2. Schema compatibility: generated plan must round-trip through PlanState.fromJSON(planObj.toJSON()) without mutation. PlanState is the authoritative consumer.
+  3. Weekly progression bounds: week-over-week volume increment ≤ 12% (10% rule + 2% slack for build phases). Validated by walking the generated `weeks` array.
+  4. Taper present: final 2 weeks have ≥25% volume reduction from peak week. Validated structurally.
+  5. Hard-day spacing: no two hard sessions (intensity ∈ {tempo, hard, test}) on consecutive days within the same week.
+  6. Bounded scaling: volume scaling factor clamped to [0.6, 1.4] of template defaults. Past this, the underlying template is the wrong starting point and the rule should refuse rather than produce a 3-hour beginner easy run.
+- **Constraint on the scaling policy:** policy itself is heuristic (not RCT-validated), so its tier is T2 even when inputs are T1. This is the structural reason a generated plan's tier ceiling is T2.
 
 ---
 
@@ -277,6 +335,50 @@ Each proposed v1.3 feature is decomposed against the registry. New primitives re
   - User-typed cadence target without bounds
   - HR-driven cueing
   - Form score derived from cadence alone
+
+### F-FFF: Form / Fitness / Fatigue scoring (v1.5)
+- **Composition:** `C-FILTER(Workouts.list, P14.compute)` — pure transformation.
+- **Tier ceiling:** `min(history_tier, P14.tier) = min(T1, T2) = T2`.
+- **Surface:** Replaces "READINESS" card on the home screen with a `{form, fitness, fatigue}` panel when ≥3 sessions exist; falls back to existing ACWR-based readiness card otherwise (preserving backward compatibility for new users).
+- **Validation:** Banister single-load decay test, two-session-cancellation test, monotonicity (fitness rises after work, fatigue too; fitness decays slower than fatigue).
+
+### F-PLAN-OVERRIDE v2: Form-aware plan override (v1.5)
+- **Composition:** `C-FALLBACK(F-PLAN.prescription, F-FFF → rest_recommendation)` with fallback to ACWR-based override for users with insufficient history.
+- **Tier law application:** `min(F-PLAN T2, F-FFF T2) = T2`.
+- **Decision rule:** Rest override fires when `form < threshold_negative_form` AND prescription intensity is in {moderate, tempo, hard, test}. Threshold: form score below the user's own median form minus 1 standard deviation, OR raw form < -30 absolute. The user-relative threshold is the key improvement over raw ACWR — Form normalizes for the user's actual training base.
+- **Backward compatibility:** When the user has <14 days of history (insufficient for FFF), F-PLAN-OVERRIDE falls back to v1's raw ACWR > 1.5 rule.
+- **Validation:** Override fires on synthetic "spike then schedule hard" cases. Override does NOT fire on synthetic "consistent base then prescribed easy" cases. Override does NOT fire when history < 14 days regardless of load.
+
+### F-WORKOUT-METRO: Prescription-driven metronome (v1.5)
+- **Composition:** `C-ENTRAIN` through P17 MetronomeController, given a prescription `{mode, intensity, phases?, packKg?}`.
+- **Tier ceiling:** Inherited from F-METRONOME = T2.
+- **Prescription → initial target mapping (run mode):**
+  - `easy` → 170 spm floor + adaptation
+  - `moderate` → 175 spm floor + adaptation
+  - `tempo` → 178 spm floor + adaptation
+  - `hard` (intervals) → 182 spm floor + adaptation
+  - `test` → 182 spm floor (race-pace cadence) + adaptation
+- **Prescription → initial target mapping (ruck mode):** target = `MetronomeEngine.ruckDefaultForPack(packKg)`.
+- **Phase-aware logic:** For workouts with `intervals` (work/walk alternation), the controller shifts the target on phase change: work phase uses the prescription's intensity floor, walk phase uses 'easy' floor. Phase changes are observed via the existing PacingPlan; no new event source introduced.
+- **Validation:** Constructing controller from ruck prescription produces ruck-bounded targets. Construction from run prescription produces run-bounded targets. Phase transition during a synthetic interval produces a distinct new target.
+
+### F-PLAN-GENERATE: Personalized plan synthesis (v1.6)
+- **Composition:** `C-COMPOSE-PLAN(COACHING_PLANS template_library, user_VDOT_and_history, event_target, scaling_policy)` via P15 PlanGenerator. Optionally chains through C-PERSIST to commit the generated plan to PlanState's localStorage.
+- **Tier ceiling:** `max(template_library T2, P13 user_state T1-or-T2, scaling_policy T2) = T2`.
+- **Surface:** New "GENERATE PLAN" entry on the plans selection screen. User specifies (mode, distance, weeks-available, days-per-week); generator either produces a plan or returns a clean refusal with reason ("Closest template is 12 weeks; your 4-week target is outside ±25% scaling window. Pick an event ≥9 weeks out, or use a hand-authored plan.").
+- **Provenance:** every generated plan carries `meta = {generated: true, templateId, scalingFactor, vdotAtGeneration, generatedAt}` so the user can see *which* template anchored their plan and what was adapted.
+- **Validation:**
+  - Generator produces null for impossible inputs (weeks count outside ±25%, mode without template).
+  - Generated 8-week 5K plan structurally resembles c25k-12wk weekly cadence (3 sessions, 2-3 rest days).
+  - Generated ruck plan contains zero run workouts; generated run plan contains zero ruck workouts.
+  - Round-trip through PlanState.fromJSON works without data loss.
+  - Weekly volume increment never exceeds 12% from previous week.
+  - Final 2 weeks taper (≥25% volume reduction vs peak week).
+- **Explicitly out-of-scope:**
+  - Race-time prediction from the generated plan.
+  - Plans outside the supported template envelope (50+ mi rucks, ultra distances, multi-day events).
+  - First-principles generation. Every generated plan traces to a published template.
+  - Per-session HR prescription as primary. HR remains supplementary.
 
 ### Run/ruck differentiation (cross-cutting invariant)
 - All pace-related and cadence-related primitives MUST honor mode. The registry forbids any composition that:

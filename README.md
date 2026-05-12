@@ -47,6 +47,48 @@ npx serve .
 
 Then open `http://localhost:8000`. Note that geolocation in browsers requires HTTPS *or* localhost — `file://` won't work.
 
+## What's in v1.6
+
+This release lands the long-promised plan generator: P15 PlanGenerator plus the C-COMPOSE-PLAN composition rule. The generator is template-adaptive, not pure-generative — every output plan traces to one of the hand-authored published templates (Cooper, Knapik, Pfitzinger). This is the design choice that distinguishes a defensible generator from a cargo-cult one: we don't reinvent periodization, we adapt published structures to user fitness and event timing.
+
+- **F-PLAN-GENERATE — personalized plan synthesis from templates (Tier 2).** New "+ GENERATE PERSONALIZED PLAN" entry on the plans sheet. You pick mode (run/ruck), event distance (5K / 10K / half marathon for runs; 6mi / 12mi for rucks), and weeks until your event. The generator selects the closest matching hand-authored template using an asymmetric log-ratio metric (training UP from a shorter template is penalized more than training DOWN; a 10K target gets the half-marathon template's structure adapted shorter, not the c25k beginner walk-run plan stretched out). It then scales the week count within ±25% of the template's natural length by inserting consolidation weeks or removing build weeks, and scales workout durations by your current VDOT or pack weight (clamped to [0.6, 1.4] of template defaults). Every generated plan carries provenance metadata showing which template anchored it and what scaling was applied.
+- **Honest refusal paths.** Outside the supported envelope, the generator refuses with a specific reason rather than producing a bad plan. "Closest template is 12 weeks; your 4-week target is outside the ±25% scaling window. Pick 9-15 weeks, or use a hand-authored plan." No silent failures.
+- **Persistence with documented degradation.** Generated plans serialize to localStorage under `ruckops.genPlans` and rehydrate at boot so PlanState can resolve their id. If localStorage gets cleared or corrupted, the generated plan record is lost — this is a Tier 3 degradation (recoverable: regenerate with the same parameters) documented honestly in the registry, not a hidden gap.
+
+### What v1.6 deliberately did NOT do (and what we learned)
+
+Two industry myths got refuted by contact with the hand-authored templates during validation:
+
+1. **The "10% weekly volume increase" rule** is folklore, not periodization. Knapik's published 8-week ruck plan has a 43% W1→W2 jump as the user moves from light-pack acclimation to standard pack. Pfitzinger has 20-25% phase transitions. Enforcing 10% would reject the exact templates we depend on. The validation now only catches catastrophic (>50%) jumps that would indicate a scaling bug, not legitimate phase transitions. This is documented in the registry under "Not enforced (and why we don't)."
+
+2. **The "final week taper" rule** is template-specific, not universal. Cooper's c25k W12 IS the 5K event, not a taper week. Knapik's W8 IS the 12-mile test. The generator preserves whatever taper shape the underlying template has; it doesn't enforce a separate rule on top. A generated 5K plan looks different from a generated half-marathon plan because the templates are different.
+
+Both lessons are now first-class entries in the COMPOSITION_REGISTRY.md "Not enforced" section. This is the FORGE discipline working as intended: structural invariants must survive contact with the templates they validate.
+
+### Phased roadmap (sealed at v1.6)
+- **v1.7:** C-ADAPT composition — daily plan modification based on Form score + actual completion delta (prescribed pace vs observed pace). Closes the feedback loop: prescription → execution → load → Form → next prescription.
+- **v1.8:** More templates (10K, marathon for run; ultra-ruck 20mi+, walking events for ruck). Each new template gets its own validation cycle against the existing P15 contract.
+- **Beyond:** HR-zone-aware pace targeting (only if HR strap paired); per-user Banister coefficient calibration; multi-event chained plans (5K → 10K → half progression).
+
+## What's in v1.5
+
+This release lands two new primitives (P14, P17) plus the F-WORKOUT-METRO composition that wires the metronome to the prescribed workout intensity. F-FFF replaces ACWR on the home readiness card when sufficient training history exists; F-PLAN-OVERRIDE upgrades to Form-aware decisions with ACWR fallback for new users.
+
+- **F-FFF — Form / Fitness / Fatigue scoring (Tier 2).** Banister's training-load model (1991) computes a moving fitness score (τ = 42 days) and fatigue score (τ = 7 days) from your session history (sRPE = duration × RPE per Foster 2001). Form = fitness − 2.0 × fatigue per Busso (2003). The readiness card on the home screen now shows Form relative to your own median (1σ bands → FRESH / OPTIMAL / ELEVATED / HIGH RISK). The model is only used when you have ≥14 days of training history; before that, the v1 ACWR-based readiness path is preserved for backward compatibility.
+- **F-PLAN-OVERRIDE v2 — Form-aware plan override.** The plan engine's "today's hard workout should become rest" decision now uses Form score when available. Override fires when Form drops more than 1σ below your personal median AND the prescribed workout is moderate/tempo/hard/test. For users with <14 days of history, falls back to the v1 ACWR > 1.5 rule. Easy days and rest days are never overridden — the plan's own rest pattern is the injury-prevention mechanism.
+- **F-WORKOUT-METRO — prescription-driven metronome.** When you start a workout prescribed by your active plan, the metronome now auto-selects the appropriate initial cadence target based on the prescription's intensity tag. Easy run → 170 spm floor. Tempo → 178. Intervals → 182. Ruck → pack-weight-scaled. Interval workouts get an additional phase-aware behavior: the cadence target shifts up to the prescription floor during the work block, and eases back to the easy floor during the recovery jog. The shift fires from the same phase-change event that triggers voice cues, so target and announcement stay in lockstep. The pre-workout screen also shows your full personalized pace zones (E / M / T / I / R for run mode, easy/standard/tempo for ruck mode) as soon as you've completed the calibration trial.
+
+### What v1.5 explicitly does NOT claim
+- That Form score predicts injury for an individual. Banister's coefficients are population-level (τ_fitness=42d, τ_fatigue=7d, k=2.0); individual fits would shift them, and we don't measure individual fits. The model is *applied* correctly; the question of whether 42 / 7 are the right time constants *for you* is empirical and unmeasured here. The decision rule uses your own median Form as the anchor, not absolute Form numbers, which makes the *relative* signal more robust than the *absolute* one.
+- That race-time prediction from fitness scores is reliable. The relationship between Banister fitness and race performance is messy at the individual level. We don't expose it.
+- That phase-aware cadence cueing improves running economy or injury risk. The literature supports population-level effects of +5% cadence on biomechanics; v1.5 just makes the cue follow the workout structure instead of staying static. Whether that helps any individual is unmeasured by this app.
+- A "recovery countdown" timer. Banister's model says nothing about *when* you should next train hard. Form trends matter; specific countdown numbers would be theater.
+
+### Phased roadmap (sealed at v1.5)
+- **v1.6:** P15 PlanGenerator — procedural plan generation given (event distance, weeks available, current VDOT, days/week). Hand-authored plans become templates the generator picks from.
+- **v1.7:** C-ADAPT composition — day-to-day plan modification based on actual completion + Form score.
+- **Beyond:** HR-zone-aware pace targeting (only if HR strap paired); per-user Banister coefficient calibration when enough history exists.
+
 ## What's in v1.4
 
 This release adds three new primitives (P13, P13b, P16) and one new composition rule (C-ENTRAIN), wired into two new product features. Per [Composition Registry](COMPOSITION_REGISTRY.md) discipline, each primitive earned its tier through validation tests before its first use site.
